@@ -36,7 +36,15 @@ function createClientForUser(userId) {
     if (clients[userId]) return;
     const authPath = getUserAuthPath(userId);
     if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
-    const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] } });
+    const puppeteerArgs = [
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
+        '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
+        '--no-first-run', '--no-zygote', '--single-process',
+        '--disable-extensions', '--disable-background-networking'
+    ];
+    const puppeteerOpts = { headless: true, args: puppeteerArgs };
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
     client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); });
     client.on('ready', () => { connectedUsers.add(userId); delete qrCodes[userId]; console.log(`[User ${userId}] Conectado`); });
     client.on('message', async (msg) => {
@@ -69,8 +77,13 @@ function createClientForUser(userId) {
         });
     });
     client.on('disconnected', () => { delete clients[userId]; connectedUsers.delete(userId); delete qrCodes[userId]; });
-    client.initialize().catch(err => console.error(`[User ${userId}] Erro:`, err.message));
     clients[userId] = client;
+    client.initialize().catch(err => {
+        console.error(`[User ${userId}] Erro ao inicializar:`, err.message);
+        delete clients[userId]; // volta para 'disconnected' para o usuario poder tentar novamente
+        delete qrCodes[userId];
+        connectedUsers.delete(userId);
+    });
 }
 
 const isRender = process.env.RENDER === 'true';
