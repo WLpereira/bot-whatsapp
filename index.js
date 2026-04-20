@@ -372,7 +372,9 @@ function createClient() {
             res.json({ success: true, message: 'Reconectando... Aguarde o QR code.' });
         } catch (err) {
             console.error('Erro ao reconectar:', err);
-        });
+            res.status(500).json({ error: err.message });
+        }
+    });
 
     app.get('/admin', function (req, res) { res.sendFile(path.join(basePath, 'public', 'index.html')); });
 
