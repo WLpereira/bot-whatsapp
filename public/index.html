@@ -1551,6 +1551,13 @@
                         txt.textContent = 'Iniciando, aguarde o QR Code...'; mini.textContent = 'Conectando'; mini.style.color = 'var(--blue)';
                         show('qr-wrapper');
                         startWaTimer();
+                    } else if (d.status === 'error') {
+                        bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
+                        txt.textContent = d.message || 'Erro ao iniciar WhatsApp'; mini.textContent = 'Erro'; mini.style.color = 'var(--danger)';
+                        show('qr-wrapper');
+                        stopWaTimer();
+                        qs('qr-area').style.cssText = 'width:260px;min-height:180px;border:3px dashed var(--danger);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text);flex-direction:column;gap:8px;padding:18px;text-align:center';
+                        qs('qr-area').innerHTML = '<span style="font-size:28px">&#9888;</span><span>' + (d.message || 'Erro ao iniciar WhatsApp') + '</span>';
                     } else {
                         bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
                         txt.textContent = 'Desconectado'; mini.textContent = 'Desconectado'; mini.style.color = 'var(--text2)';
