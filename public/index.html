@@ -769,27 +769,10 @@
             margin-bottom: 4px
         }
 
-        var prevWaStatus=null;
-
         .item-title {
             font-weight: 600;
             font-size: 13px
         }
-
-        var btn=qs('btn-wa-connect');
-        btn.disabled=true;
-        btn.textContent='Iniciando...';
-
-        api('/api/whatsapp/init', {
-            method:'POST'
-
-        }).then(function() {
-                btn.disabled=false; btn.innerHTML='&#9654; Conectar WhatsApp';
-                prevWaStatus=null; checkWaStatus();
-
-            }).catch(function() {
-                btn.disabled=false; btn.innerHTML='&#9654; Conectar WhatsApp';
-            });
 
         .item-sub {
             color: var(--text2);
@@ -816,76 +799,51 @@
             }
 
             .main-content {
-                margin-Conectado'; mini.textContent=' Conectado'; mini.style.color=' var(--accent)';
- hide('qr-wrapper');
-                stopWaTimer();
+                margin-left: 0;
+                padding: 16px;
+                padding-top: 68px
             }
 
-            else if(d.status==='qr') {
-                bar.classList.add('status-qr');
-                dot.className='status-dot dot-yellow';
-                txt.textContent='Escaneie o QR Code no WhatsApp';
-                mini.textContent='QR Code';
-                mini.style.color='var(--yellow)';
-                show('qr-wrapper');
-                if(prevWaStatus !=='qr') loadQR(); // so carrega QR ao transicionar para este estado
-                startWaTimer();
+            .mobile-header {
+                display: flex
             }
 
-            else if(d.status==='connecting') {
-                bar.classList.add('status-connecting');
-                dot.className='status-dot dot-blue';
-                txt.textContent='Iniciando, aguarde o QR Code...';
-                mini.textContent='Conectando';
-                mini.style.color='var(--blue)';
-                show('qr-wrapper'); // mostra wrapper com loading enquanto aguarda QR
-                startWaTimer();
+            .stats-grid {
+                grid-template-columns: 1fr 1fr
             }
 
-            else {
-                bar.classList.add('status-disconnected');
-                dot.className='status-dot dot-red';
-                txt.textContent='Desconectado';
-                mini.textContent='Desconectado';
-                mini.style.color='var(--text2)';
-                hide('qr-wrapper');
-                stopWaTimer();
+            .log-row {
+                grid-template-columns: 1fr auto
             }
-
-            prevWaStatus=d.status;
         }
 
-        catch(e) {}
+        @media(max-width:400px) {
+            .login-card {
+                padding: 28px 20px
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr
+            }
         }
 
-        function startWaTimer() {
-            if( !waTimer) waTimer=setInterval(checkWaStatus, 20 @media(max-width:400px) {
-                    .login-card {
-                        padding: 28px 20px
-                    }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px
+        }
 
-                    .stats-grid {
-                        grid-template-columns: 1fr
-                    }
-                }
+        ::-webkit-scrollbar-track {
+            background: var(--bg)
+        }
 
-                ::-webkit-scrollbar {
-                    width: 6px;
-                    height: 6px
-                }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px
+        }
 
-                ::-webkit-scrollbar-track {
-                    background: var(--bg)
-                }
-
-                ::-webkit-scrollbar-thumb {
-                    background: var(--border);
-                    border-radius: 3px
-                }
-
-                ::-webkit-scrollbar-thumb:hover {
-                    background: var(--text2)
-                }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text2)
+        }
     </style>
 </head>
 
@@ -1577,12 +1535,12 @@
                         bar.classList.add('status-qr'); dot.className = 'status-dot dot-yellow';
                         txt.textContent = 'Escaneie o QR Code no WhatsApp'; mini.textContent = 'QR Code'; mini.style.color = 'var(--yellow)';
                         show('qr-wrapper');
-                        if (prevWaStatus !== 'qr') loadQR(); // so carrega QR ao transicionar para este estado
+                        if (prevWaStatus !== 'qr') loadQR();
                         startWaTimer();
                     } else if (d.status === 'connecting') {
                         bar.classList.add('status-connecting'); dot.className = 'status-dot dot-blue';
                         txt.textContent = 'Iniciando, aguarde o QR Code...'; mini.textContent = 'Conectando'; mini.style.color = 'var(--blue)';
-                        show('qr-wrapper'); // mostra wrapper com loading enquanto aguarda QR
+                        show('qr-wrapper');
                         startWaTimer();
                     } else {
                         bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
