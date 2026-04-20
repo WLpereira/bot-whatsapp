@@ -177,6 +177,8 @@ app.post('/api/resume', auth, (req, res) => { db.run("UPDATE users SET is_paused
 app.get('/api/ping', (req, res) => res.json({ ok: true }));
 
 app.get('/api/qr', auth, async (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
     const qr = qrCodes[req.session.user.id];
     if (!qr) return res.json({ qr: null });
     try { const url = await QRCode.toDataURL(qr, { width: 280, margin: 2 }); res.json({ qr: url }); }
@@ -184,6 +186,8 @@ app.get('/api/qr', auth, async (req, res) => {
 });
 
 app.get('/api/whatsapp/status', auth, (req, res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
     const uid = req.session.user.id;
     if (connectedUsers.has(uid)) return res.json({ status: 'connected' });
     if (qrCodes[uid]) return res.json({ status: 'qr' });
