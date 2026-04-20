@@ -225,9 +225,7 @@ app.post('/api/whatsapp/logout', auth, async (req, res) => {
 app.post('/api/test-message', auth, (req, res) => {
     const client = clients[req.session.user.id];
     if (!client) return res.status(400).json({ error: 'WhatsApp nao conectado. Conecte primeiro.' });
-    const raw = (req.body.to || req.body.phone || '').replace(/[^0-9]/g, '');
-    const phone = raw;).replace(/[^0-9]/g, '');
-    const phone = raw;
+    const phone = (req.body.to || req.body.phone || '').replace(/[^0-9]/g, '');
     client.sendMessage(`${phone}@c.us`, req.body.message).then(() => res.json({ success: true })).catch(err => res.status(500).json({ error: err.message }));
 });
 
