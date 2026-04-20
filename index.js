@@ -1,6 +1,4 @@
-ï»¿// Bot de WhatsApp com Admin Web
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
 const express = require('express');
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
@@ -12,91 +10,181 @@ const isPackaged = typeof process.pkg !== 'undefined';
 let basePath = (typeof __dirname !== 'undefined' && __dirname) ? __dirname : process.cwd();
 if (isPackaged) basePath = process.cwd();
 
-const configPath = path.join(basePath, 'config.json');
 const dbPath = path.join(basePath, 'data', 'db.sqlite');
-const authPath = path.join(basePath, '.wwebjs_auth');
-
-if (!fs.existsSync(path.join(basePath, 'data'))) fs.mkdirSync(path.join(basePath, 'data'), { recursive: true });
-if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
-
-let config = { owner_number: '', menu_message: 'Ola! Seja bem-vindo!\n\nEscolha uma opcao:\n{OPTIONS}', options: [{ key: '1', title: 'Comprar', response: 'Otimo! Me diga o que voce deseja comprar.', notify_owner: false }, { key: '2', title: 'Falar com atendente', response: 'Um atendente ira falar com voce em breve.', notify_owner: true }, { key: '3', title: 'Horario', response: 'Nosso horario e de segunda a sexta das 8h as 18h.', notify_owner: false }], triggers: ['oi', 'ola', 'olÃ¡', 'menu', 'inicio', 'bom dia', 'boa tarde', 'boa noite'], default_reply: '' };
-
-if (fs.existsSync(configPath)) try { config = { ...config, ...JSON.parse(fs.readFileSync(configPath, 'utf8')) }; } catch (e) { }
-function saveConfig() { fs.writeFileSync(configPath, JSON.stringify(config, null, 2)); }
-function buildMenuMessage() { const list = config.options.map(o => o.key + ' - ' + o.title).join('\n'); return config.menu_message.replace('{OPTIONS}', list); }
+const dataDir = path.join(basePath, 'data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 const db = new sqlite3.Database(dbPath);
-db.serialize(function () {
-    db.run('CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, created_at TEXT)');
-    db.run('CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, sender TEXT, msg TEXT, opt TEXT, ts TEXT)');
-    db.get("SELECT * FROM admins WHERE username='admin'", function (err, row) {
-        if (!row) {
-            db.run("INSERT INTO admins (username, password_hash, created_at) VALUES ('admin', ?, datetime('now'))", [bcrypt.hashSync('admin', 10)]);
-            console.log('Admin criado: admin/admin');
-        }
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT, role TEXT DEFAULT 'user', is_paused INTEGER DEFAULT 0, created_at TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS configs (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE, menu_message TEXT, default_reply TEXT, FOREIGN KEY(user_id) REFERENCES users(id))`);
+    db.run(`CREATE TABLE IF NOT EXISTS options (id INTEGER PRIMARY KEY, user_id INTEGER, key_num TEXT, title TEXT, response TEXT, FOREIGN KEY(user_id) REFERENCES users(id))`);
+    db.run(`CREATE TABLE IF NOT EXISTS keywords (id INTEGER PRIMARY KEY, user_id INTEGER, keyword TEXT, response TEXT, FOREIGN KEY(user_id) REFERENCES users(id))`);
+    db.run(`CREATE TABLE IF NOT EXISTS blacklist (id INTEGER PRIMARY KEY, user_id INTEGER, phone_number TEXT, FOREIGN KEY(user_id) REFERENCES users(id))`);
+    db.run(`CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, user_id INTEGER, sender TEXT, msg TEXT, opt TEXT, ts TEXT, created_date TEXT, FOREIGN KEY(user_id) REFERENCES users(id))`);
+    db.get("SELECT * FROM users WHERE role='admin'", (err, row) => {
+        if (!row) db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, datetime('now'))", ['admin', bcrypt.hashSync('admin', 10), 'admin']);
     });
 });
 
-let client = null;
-let whatsappStatus = 'disconnected';
-let clientInitializing = false;
+const clients = {}, qrCodes = {};
 
-function createClient() {
-    if (clientInitializing) return;
-    clientInitializing = true;
-    whatsappStatus = 'connecting';
-    try {
-        client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] } });
-        client.on('qr', function (qr) { whatsappStatus = 'qr'; console.log('\n========================================\n   ESCANEIE O QR CODE\n========================================\n'); qrcode.generate(qr, { small: true }); });
-        client.on('ready', function () { whatsappStatus = 'connected'; clientInitializing = false; console.log('\n========================================\n   BOT CONECTADO!\n========================================\n'); });
-        client.on('authenticated', function () { whatsappStatus = 'connected'; clientInitializing = false; });
-        client.on('auth_failure', function (msg) { whatsappStatus = 'error'; clientInitializing = false; });
-        client.on('disconnected', function (reason) { whatsappStatus = 'disconnected'; clientInitializing = false; });
-        client.on('message', async function (message) {
-            try {
-                if (message.from.endsWith('@g.us')) return;
-                var raw = message.body || '';
-                var body = raw.toLowerCase().trim();
-                if (!body) return;
-                db.run("INSERT INTO messages (sender, msg, opt, ts) VALUES (?, ?, ?, datetime('now'))", [message.from, raw, body]);
-                var isMenu = config.triggers.some(function (t) { return body.indexOf(t.toLowerCase()) >= 0; });
-                if (isMenu) { await client.sendMessage(message.from, buildMenuMessage()); return; }
-                var opt = config.options.find(function (o) { return o.key === body; });
-                if (opt) { await client.sendMessage(message.from, opt.response); if (opt.notify_owner && config.owner_number) await client.sendMessage(config.owner_number + '@c.us', '[' + opt.title + '] Cliente: ' + message.from.split('@')[0]); return; }
-                if (config.default_reply) await client.sendMessage(message.from, config.default_reply);
-            } catch (err) { console.error('Erro:', err.message); }
+function getUserAuthPath(userId) { return path.join(dataDir, `.wwebjs_auth_${userId}`); }
+
+function createClientForUser(userId) {
+    if (clients[userId]) return;
+    const authPath = getUserAuthPath(userId);
+    if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
+    const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] } });
+    client.on('qr', (qr) => { qrCodes[userId] = qr; });
+    client.on('ready', () => { console.log(`[User ${userId}] ? Conectado`); });
+    client.on('message', async (msg) => {
+        if (msg.from.endsWith('@g.us')) return;
+        const body = (msg.body || '').toLowerCase().trim();
+        const today = new Date().toISOString().split('T')[0];
+        db.run("INSERT INTO messages (user_id, sender, msg, opt, ts, created_date) VALUES (?,?,?,?,datetime('now'),?)", [userId, msg.from, msg.body, body, today]);
+        db.get("SELECT is_paused FROM users WHERE id=?", [userId], async (err, user) => {
+            if (user?.is_paused) return;
+            db.get("SELECT phone_number FROM blacklist WHERE user_id=? AND phone_number=?", [userId, msg.from], (err, blocked) => {
+                if (blocked) return;
+                db.all("SELECT response FROM keywords WHERE user_id=? AND keyword LIKE ?", [userId, `%${body}%`], async (err, kw) => {
+                    if (kw?.length) { await msg.reply(kw[0].response); return; }
+                    db.all("SELECT * FROM options WHERE user_id=?", [userId], async (err, opts) => {
+                        const opt = opts?.find(o => o.key_num === body);
+                        if (opt) { await msg.reply(opt.response); return; }
+                        if (opts?.length > 0) {
+                            const list = opts.map(o => `${o.key_num} - ${o.title}`).join('\n');
+                            db.get("SELECT menu_message FROM configs WHERE user_id=?", [userId], async (err, cfg) => {
+                                await msg.reply((cfg?.menu_message || 'Menu:').replace('{OPTIONS}', list));
+                            });
+                            return;
+                        }
+                        db.get("SELECT default_reply FROM configs WHERE user_id=?", [userId], async (err, cfg) => {
+                            if (cfg?.default_reply) await msg.reply(cfg.default_reply);
+                        });
+                    });
+                });
+            });
         });
-        client.initialize().catch(err => { console.error('Erro WhatsApp:', err.message); whatsappStatus = 'error'; clientInitializing = false; });
-    } catch (err) { console.error('Erro ao criar cliente:', err.message); whatsappStatus = 'error'; clientInitializing = false; }
+    });
+    client.on('disconnected', () => { delete clients[userId]; });
+    client.initialize().catch(err => console.error(`[User ${userId}] Erro:`, err.message));
+    clients[userId] = client;
 }
 
 const isRender = process.env.RENDER === 'true';
-if (!isRender) { console.log('Modo local - inicializando WhatsApp...'); createClient(); } else { console.log('â³ Modo Render - WhatsApp sob demanda via painel admin'); }
-
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(session({ secret: 'bot-secret-2024', resave: false, saveUninitialized: false, cookie: { maxAge: 3600000 } }));
 app.use(express.static(path.join(basePath, 'public')));
 
-function auth(req, res, next) { if (req.session && req.session.user) return next(); res.status(401).json({ error: 'Nao autorizado' }); }
+const auth = (req, res, next) => { if (req.session?.user) return next(); res.status(401).json({ error: 'Não autorizado' }); };
+const adminAuth = (req, res, next) => { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Acesso negado' }); };
 
-app.post('/api/login', function (req, res) { db.get("SELECT * FROM admins WHERE username = ?", [req.body.username], function (err, user) { if (user && bcrypt.compareSync(req.body.password, user.password_hash)) { req.session.user = { id: user.id, username: user.username }; res.json({ success: true, username: user.username }); } else { res.status(401).json({ error: 'Credenciais invalidas' }); } }); });
-app.post('/api/logout', function (req, res) { req.session.destroy(function () { res.json({ success: true }); }); });
-app.get('/api/ping', (req, res) => res.json({ ok: true, time: Date.now() }));
-app.get('/api/config', auth, function (req, res) { res.json(config); });
-app.post('/api/config', auth, function (req, res) { config = { ...config, ...req.body }; saveConfig(); res.json({ success: true }); });
-app.get('/api/logs', auth, function (req, res) { db.all("SELECT * FROM messages ORDER BY id DESC LIMIT 200", function (err, rows) { res.json(rows || []); }); });
-app.post('/api/change-password', auth, function (req, res) { db.get("SELECT * FROM admins WHERE id = ?", [req.session.user.id], function (err, user) { if (user && bcrypt.compareSync(req.body.old_password, user.password_hash)) { db.run("UPDATE admins SET password_hash = ? WHERE id = ?", [bcrypt.hashSync(req.body.new_password, 10), user.id]); res.json({ success: true }); } else { res.status(400).json({ error: 'Senha incorreta' }); } }); });
-app.get('/api/users', auth, function (req, res) { db.all("SELECT id, username, created_at FROM admins ORDER BY id", function (err, rows) { res.json(rows || []); }); });
-app.post('/api/users', auth, function (req, res) { var username = (req.body.username || '').trim(); var password = req.body.password || ''; if (!username || username.length < 3) return res.status(400).json({ error: 'Nome minimo 3 caracteres' }); if (!password || password.length < 4) return res.status(400).json({ error: 'Senha minima 4 caracteres' }); db.get("SELECT * FROM admins WHERE username = ?", [username], function (err, exists) { if (exists) return res.status(400).json({ error: 'Usuario ja existe' }); db.run("INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, datetime('now'))", [username, bcrypt.hashSync(password, 10)], function (err) { if (err) return res.status(500).json({ error: 'Erro ao criar' }); res.json({ success: true, id: this.lastID }); }); }); });
-app.put('/api/users/:id', auth, function (req, res) { var id = parseInt(req.params.id); var newUsername = (req.body.username || '').trim(); if (!newUsername || newUsername.length < 3) return res.status(400).json({ error: 'Nome minimo 3 caracteres' }); db.get("SELECT * FROM admins WHERE username = ? AND id != ?", [newUsername, id], function (err, exists) { if (exists) return res.status(400).json({ error: 'Nome ja existe' }); db.run("UPDATE admins SET username = ? WHERE id = ?", [newUsername, id], function (err) { if (err) return res.status(500).json({ error: 'Erro ao atualizar' }); if (req.session.user.id === id) req.session.user.username = newUsername; res.json({ success: true }); }); }); });
-app.post('/api/users/:id/reset-password', auth, function (req, res) { var id = parseInt(req.params.id); var newPassword = req.body.password || ''; if (!newPassword || newPassword.length < 4) return res.status(400).json({ error: 'Senha minima 4 caracteres' }); db.run("UPDATE admins SET password_hash = ? WHERE id = ?", [bcrypt.hashSync(newPassword, 10), id], function (err) { if (err) return res.status(500).json({ error: 'Erro ao resetar' }); res.json({ success: true }); }); });
-app.delete('/api/users/:id', auth, function (req, res) { var id = parseInt(req.params.id); if (req.session.user.id === id) return res.status(400).json({ error: 'Nao pode deletar seu usuario' }); db.run("DELETE FROM admins WHERE id = ?", [id], function (err) { if (err) return res.status(500).json({ error: 'Erro ao deletar' }); res.json({ success: true }); }); });
-app.get('/api/me', auth, function (req, res) { res.json({ id: req.session.user.id, username: req.session.user.username }); });
-app.get('/api/whatsapp/status', auth, function (req, res) { res.json({ status: whatsappStatus }); });
-app.post('/api/whatsapp/logout', auth, async function (req, res) { try { if (client) { await client.logout(); await client.destroy(); client = null; } if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true }); whatsappStatus = 'disconnected'; res.json({ success: true, message: 'WhatsApp deslogado' }); } catch (err) { res.status(500).json({ error: err.message }); } });
-app.post('/api/whatsapp/reconnect', auth, function (req, res) { try { if (client) { client.destroy(); client = null; } whatsappStatus = 'connecting'; createClient(); res.json({ success: true, message: 'Reconectando...' }); } catch (err) { res.status(500).json({ error: err.message }); } });
-app.get('/admin', function (req, res) { res.sendFile(path.join(basePath, 'public', 'index.html')); });
-function startServer(port = process.env.PORT || 3000) { const server = app.listen(port, function () { const host = process.env.RENDER ? 'https://seu-bot.onrender.com' : 'http://localhost:' + port; console.log('\n========================================'); console.log('Admin UI: ' + host + '/admin'); console.log('Login: admin / admin'); console.log('========================================\n'); }).on('error', function (err) { if (err.code === 'EADDRINUSE') { console.log('Porta ' + port + ' em uso, tentando ' + (port + 1) + '...'); startServer(port + 1); } else { console.error('Erro ao iniciar:', err); setTimeout(() => startServer(port), 5000); } }); }
-try { startServer(); } catch (err) { console.error('Erro crÃ­tico:', err); process.exit(1); }
+app.post('/api/login', (req, res) => {
+    db.get("SELECT * FROM users WHERE username=?", [req.body.username], (err, user) => {
+        if (user && bcrypt.compareSync(req.body.password, user.password_hash)) {
+            req.session.user = { id: user.id, username: user.username, role: user.role };
+            res.json({ success: true, username: user.username, role: user.role });
+        } else {
+            res.status(401).json({ error: 'Credenciais inválidas' });
+        }
+    });
+});
+
+app.post('/api/logout', (req, res) => { req.session.destroy(() => res.json({ success: true })); });
+app.get('/api/me', auth, (req, res) => { res.json(req.session.user); });
+app.get('/api/users', auth, adminAuth, (req, res) => { db.all("SELECT id, username, role, is_paused, created_at FROM users", (err, rows) => { res.json(rows || []); }); });
+app.post('/api/users', auth, adminAuth, (req, res) => {
+    const { username, password } = req.body;
+    if (!username || username.length < 3) return res.status(400).json({ error: 'Mínimo 3 caracteres' });
+    if (!password || password.length < 4) return res.status(400).json({ error: 'Mínimo 4 caracteres' });
+    db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,'user',datetime('now'))", [username, bcrypt.hashSync(password, 10)], function (err) {
+        if (err) return res.status(400).json({ error: 'Usuário já existe' });
+        res.json({ success: true, id: this.lastID });
+    });
+});
+
+app.delete('/api/users/:id', auth, adminAuth, (req, res) => { db.run("DELETE FROM users WHERE id=?", [req.params.id], () => res.json({ success: true })); });
+app.get('/api/config', auth, (req, res) => {
+    const userId = req.query.user_id && req.session.user.role === 'admin' ? req.query.user_id : req.session.user.id;
+    Promise.all([
+        new Promise(r => db.get("SELECT * FROM configs WHERE user_id=?", [userId], (e, d) => r(d || {}))),
+        new Promise(r => db.all("SELECT * FROM options WHERE user_id=?", [userId], (e, d) => r(d || []))),
+        new Promise(r => db.all("SELECT * FROM keywords WHERE user_id=?", [userId], (e, d) => r(d || []))),
+        new Promise(r => db.all("SELECT * FROM blacklist WHERE user_id=?", [userId], (e, d) => r(d || [])))
+    ]).then(([cfg, opts, kw, bl]) => { res.json({ config: cfg, options: opts, keywords: kw, blacklist: bl }); });
+});
+
+app.post('/api/config', auth, (req, res) => {
+    const { menu_message, default_reply } = req.body;
+    db.get("SELECT id FROM configs WHERE user_id=?", [req.session.user.id], (err, cfg) => {
+        if (cfg) {
+            db.run("UPDATE configs SET menu_message=?, default_reply=? WHERE user_id=?", [menu_message, default_reply, req.session.user.id], () => res.json({ success: true }));
+        } else {
+            db.run("INSERT INTO configs (user_id, menu_message, default_reply) VALUES (?,?,?)", [req.session.user.id, menu_message, default_reply], () => res.json({ success: true }));
+        }
+    });
+});
+
+app.post('/api/options', auth, (req, res) => {
+    db.run("INSERT INTO options (user_id, key_num, title, response) VALUES (?,?,?,?)", [req.session.user.id, req.body.key_num, req.body.title, req.body.response], function () { res.json({ success: true, id: this.lastID }); });
+});
+
+app.delete('/api/options/:id', auth, (req, res) => { db.run("DELETE FROM options WHERE id=? AND user_id=?", [req.params.id, req.session.user.id], () => res.json({ success: true })); });
+
+app.post('/api/keywords', auth, (req, res) => {
+    db.run("INSERT INTO keywords (user_id, keyword, response) VALUES (?,?,?)", [req.session.user.id, req.body.keyword, req.body.response], function () { res.json({ success: true, id: this.lastID }); });
+});
+
+app.delete('/api/keywords/:id', auth, (req, res) => { db.run("DELETE FROM keywords WHERE id=? AND user_id=?", [req.params.id, req.session.user.id], () => res.json({ success: true })); });
+
+app.post('/api/blacklist', auth, (req, res) => {
+    db.run("INSERT INTO blacklist (user_id, phone_number) VALUES (?,?)", [req.session.user.id, req.body.phone_number], function () { res.json({ success: true, id: this.lastID }); });
+});
+
+app.delete('/api/blacklist/:id', auth, (req, res) => { db.run("DELETE FROM blacklist WHERE id=? AND user_id=?", [req.params.id, req.session.user.id], () => res.json({ success: true })); });
+
+app.get('/api/messages', auth, (req, res) => {
+    const userId = req.query.user_id && req.session.user.role === 'admin' ? req.query.user_id : req.session.user.id;
+    const today = new Date().toISOString().split('T')[0];
+    db.all("SELECT * FROM messages WHERE user_id=? AND created_date=? ORDER BY id DESC LIMIT 200", [userId, today], (err, rows) => { res.json(rows || []); });
+});
+
+app.post('/api/pause', auth, (req, res) => { db.run("UPDATE users SET is_paused=1 WHERE id=?", [req.session.user.id], () => res.json({ success: true })); });
+app.post('/api/resume', auth, (req, res) => { db.run("UPDATE users SET is_paused=0 WHERE id=?", [req.session.user.id], () => res.json({ success: true })); });
+
+app.get('/api/whatsapp/status', auth, (req, res) => {
+    const connected = !!clients[req.session.user.id];
+    res.json({ connected, needs_qr: !connected });
+});
+
+app.post('/api/whatsapp/init', auth, (req, res) => { createClientForUser(req.session.user.id); res.json({ success: true }); });
+
+app.post('/api/whatsapp/logout', auth, async (req, res) => {
+    const client = clients[req.session.user.id];
+    if (client) { await client.logout().catch(() => { }); await client.destroy().catch(() => { }); delete clients[req.session.user.id]; }
+    const authPath = getUserAuthPath(req.session.user.id);
+    if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+    res.json({ success: true });
+});
+
+app.post('/api/test-message', auth, (req, res) => {
+    const client = clients[req.session.user.id];
+    if (!client) return res.status(400).json({ error: 'WhatsApp não conectado' });
+    const phone = req.body.phone.replace(/\D/g, '');
+    client.sendMessage(`${phone}@c.us`, req.body.message).then(() => res.json({ success: true })).catch(err => res.status(500).json({ error: err.message }));
+});
+
+setInterval(() => { const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0]; db.run("DELETE FROM messages WHERE created_date < ?", [yesterday]); }, 3600000);
+
+app.get('/admin', (req, res) => { res.sendFile(path.join(basePath, 'public', 'index.html')); });
+
+function startServer(port = process.env.PORT || 3000) {
+    app.listen(port, () => { const host = isRender ? 'https://seu-bot.onrender.com' : `http://localhost:${port}`; console.log('\n? Bot: ' + host + '/admin\n'); }).on('error', (err) => {
+        if (err.code === 'EADDRINUSE') { startServer(port + 1); } else { setTimeout(() => startServer(port), 5000); }
+    });
+}
+
+try { startServer(); } catch (err) { console.error('Erro:', err); process.exit(1); }
