@@ -1,6 +1,7 @@
 # Dependências
 node_modules/
 package-lock.json
+yarn.lock
 
 # Build/Dist
 dist/
@@ -12,22 +13,37 @@ dist/
 # Logs
 *.log
 npm-debug.log*
+yarn-error.log*
 
 # OS
 .DS_Store
 Thumbs.db
+.env.local
+.env.*.local
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-workspace
 
-# Banco de dados (local)
+# Banco de dados
 data/db.sqlite
+data/*.db
 
 # Arquivos temporários
 *.tmp
+*.temp
+
+# Render
+build/
+.render
+
+# Build scripts Windows
+*.bat
+*.lnk
+dist/
 temp/
 
 # Scripts auxiliares (opcional)

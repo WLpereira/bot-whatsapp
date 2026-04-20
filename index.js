@@ -341,9 +341,10 @@ app.post('/api/whatsapp/reconnect', auth, function (req, res) {
 app.get('/admin', function (req, res) { res.sendFile(path.join(basePath, 'public', 'index.html')); });
 
 // Encontrar porta disponível
-function startServer(port = 3000) {
+function startServer(port = process.env.PORT || 3000) {
     const server = app.listen(port, function () {
-        console.log('\nAdmin UI: http://localhost:' + port + '/admin');
+        const host = process.env.RENDER ? 'https://seu-bot.onrender.com' : 'http://localhost:' + port;
+        console.log('\nAdmin UI: ' + host + '/admin');
         console.log('Login: admin / admin\n');
     }).on('error', function (err) {
         if (err.code === 'EADDRINUSE') {
@@ -355,5 +356,5 @@ function startServer(port = 3000) {
     });
 }
 
-startServer(3000);
+startServer();
 
