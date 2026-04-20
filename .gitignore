@@ -1,0 +1,35 @@
+# Dependências
+node_modules/
+package-lock.json
+
+# Build/Dist
+dist/
+*.exe
+
+# Autenticação WhatsApp
+.wwebjs_auth/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Banco de dados (local)
+data/db.sqlite
+
+# Arquivos temporários
+*.tmp
+temp/
+
+# Scripts auxiliares (opcional)
+create-shortcut.ps1
+create-shortcut-fixed.ps1

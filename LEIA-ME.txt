@@ -1,0 +1,104 @@
+﻿
+      BOT WHATSAPP - COMECE AQUI!                      
+              (Para usar o bot)                            
+
+
+BEM-VINDO!
+
+Seu bot WhatsApp está PRONTO para usar!
+
+
+
+ 3 PASSOS RÁPIDOS:
+
+PASSO 1: INICIAR 
+
+ Procure nesta pasta por:                                
+     BOT WHATSAPP.lnk (arquivo com emoji verde)      
+ OU                                                       
+    INICIAR BOT.lnk (arquivo com ícone de programa)    
+                                                          
+ DUPLO CLIQUE nele!                                      
+ (Vão abrir uma janela preta - é normal!)               
+
+
+PASSO 2: ESCANEAR 
+
+ 1. Pegue seu CELULAR                                    
+ 2. Abra WhatsApp                                        
+ 3. Menu  Dispositivos conectados                       
+ 4. Conectar dispositivo                                 
+ 5. Aponte câmera para o CÓDIGO QR na tela do PC        
+ 6. Confirme no celular                                 
+                                                          
+ Pronto! Bot online!                                  
+
+
+PASSO 3: CONFIGURAR 
+
+ 1. Abra navegador (Chrome, Firefox, Edge)              
+ 2. Digite: http://localhost:3000/admin                 
+ 3. Login: admin / admin                                
+ 4. Edite as mensagens                                  
+ 5. Clique SALVAR                                       
+                                                          
+  NÃO ESQUEÇA: Troque a senha (admin/admin)          
+ Use uma senha forte e segura!                          
+
+
+
+
+ ERROS COMUNS E COMO RESOLVER:
+
+"A janela abriu e fechou sozinha"
+ Execute:  BOT WHATSAPP.lnk novamente
+ Veja se aparece mensagem de erro
+
+"Não consigo acessar http://localhost:3000/admin"
+ Recarregue a página (pressione F5)
+ Tente em outro navegador
+
+"Código QR não apareceu"
+ Feche a janela e execute  BOT WHATSAPP.lnk novamente
+ Atualize o WhatsApp no celular
+
+"Bot não responde as mensagens"
+ Verifique se está configurado corretamente no admin
+ Tente enviar: oi, olá, ola
+
+
+
+ MUITO IMPORTANTE:
+
+1.  NÃO FECHE a janela preta (terminal)
+   Enquanto ela está aberta, o bot funciona
+   Se fechar, o bot desliga
+
+2.  NÃO DELETE a pasta "data"
+   Contém o banco de dados (histórico de clientes)
+
+3.  MANTENHA O PC LIGADO
+   O bot só funciona enquanto o computador está ligado
+
+4.  TROQUE A SENHA PADRÃO
+   Login padrão: admin/admin
+   Troque para uma senha SEGURA no painel de admin
+
+
+
+ PRECISA DE AJUDA?
+
+1. Releia este arquivo
+2. Veja se há mensagens de erro na janela preta
+3. Contate seu desenvolvedor/suporte
+   Envie PRINT da janela preta se houver erro
+
+
+
+ BOT PRONTO PARA USAR!
+
+Versão: 1.0
+Data: 2026
+Suporte: Consulte seu desenvolvedor
+
+

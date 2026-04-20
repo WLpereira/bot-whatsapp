@@ -1,0 +1,62 @@
+{
+  "owner_number": "55XXXXXXXXXXX",
+  "menu_message": "Olá! Seja bem-vindo \n\nDigite uma opção:\n1 - Comprar\n2 - Falar com atendente\n3 - Horário de atendimento\n4 - TESTE\n5 - TESTE2",
+  "options": [
+    {
+      "key": "1",
+      "title": "Comprar",
+      "response": "Otimo! Me diga o que voce deseja comprar.",
+      "notify_owner": false
+    },
+    {
+      "key": "2",
+      "title": "Falar com atendente",
+      "response": "Um atendente ira falar com voce em breve.",
+      "notify_owner": true
+    },
+    {
+      "key": "3",
+      "title": "Horario",
+      "response": "Nosso horario e de segunda a sexta das 8h as 18h.",
+      "notify_owner": false
+    },
+    {
+      "key": "4",
+      "title": "TESTE",
+      "response": "TESTE1",
+      "notify_owner": false
+    },
+    {
+      "key": "5",
+      "title": "TESTE 2",
+      "response": "TESTE 2",
+      "notify_owner": false
+    }
+  ],
+  "triggers": [
+    "oi",
+    "ola",
+    "olá",
+    "menu",
+    "inicio",
+    "ola",
+    "bom dia",
+    "boa tarde",
+    "boa noite"
+  ],
+  "default_reply": "Desculpe, não entendi. Digite 1, 2 ou 3.",
+  "responses": {
+    "1": {
+      "reply": " Ótimo! Me diga o que você deseja comprar que vamos te ajudar.",
+      "notify": ""
+    },
+    "2": {
+      "reply": " Um atendente irá falar com você em breve. Aguarde um momento ",
+      "notify": ""
+    },
+    "3": {
+      "reply": " Nosso horário de atendimento é de segunda a sexta das 8h às 18h.",
+      "notify": ""
+    }
+  }
+}

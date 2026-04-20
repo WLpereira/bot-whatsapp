@@ -1,0 +1,31 @@
+{
+  "name": "whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp simples para pequenos negócios usando whatsapp-web.js",
+  "main": "index.js",
+  "bin": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build:pkg": "pkg . --targets node18-win-x64 --out-path dist"
+  },
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.22.1",
+    "express-session": "^1.19.0",
+    "qrcode-terminal": "^0.12.0",
+    "sqlite3": "^5.1.7",
+    "whatsapp-web.js": "^1.20.0"
+  },
+  "pkg": {
+    "assets": [
+      "public/**/*",
+      "config.json",
+      "data/db.sqlite"
+    ],
+    "scripts": [
+      "index.js"
+    ]
+  }
+}

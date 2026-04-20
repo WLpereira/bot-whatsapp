@@ -1,0 +1,116 @@
+﻿
+════════════════════════════════════════════════════════════
+         BOT WHATSAPP - GUIA RÁPIDO DE USO
+════════════════════════════════════════════════════════════
+
+BEM-VINDO!
+
+Seu bot WhatsApp está 100% pronto para usar.
+Siga os 3 passos abaixo:
+
+
+════════════════════════════════════════════════════════════
+ PASSO 1: INICIAR O BOT
+════════════════════════════════════════════════════════════
+
+Escolha uma das opções:
+
+  ✓ OPÇÃO 1 (Recomendado):
+    Duplo clique em: INICIAR (com seu ícone)
+
+  ✓ OPÇÃO 2 (Alternativa):
+    Duplo clique em: Run.bat
+
+Uma janela preta vai abrir. É NORMAL!
+Não feche esta janela!
+
+
+════════════════════════════════════════════════════════════
+ PASSO 2: ESCANEAR QR CODE (15-30 segundos)
+════════════════════════════════════════════════════════════
+
+1. Pegue seu CELULAR
+2. Abra WhatsApp
+3. Menu ☰ → Dispositivos conectados
+4. Conectar dispositivo
+5. Aponte câmera para o CÓDIGO QR na tela do PC
+6. Confirme no celular
+
+✓ Pronto! Bot online!
+
+
+════════════════════════════════════════════════════════════
+ PASSO 3: CONFIGURAR NO PAINEL
+════════════════════════════════════════════════════════════
+
+1. Abra seu navegador (Chrome, Firefox, Edge)
+2. Digite: http://localhost:3000/admin
+3. Login: admin / admin
+4. Edite as mensagens
+5. Clique: SALVAR
+
+⚠️  IMPORTANTE: Troque a senha padrão!
+   Crie uma senha SEGURA!
+
+
+════════════════════════════════════════════════════════════
+ ⚠️  REGRAS IMPORTANTES
+════════════════════════════════════════════════════════════
+
+❌ NÃO FECHE a janela preta (terminal)
+   → O bot vai desligar!
+
+❌ NÃO DELETE a pasta "data"
+   → Contém histórico dos clientes!
+
+❌ NÃO DESLIGUE O PC
+   → O bot só funciona enquanto ligado!
+
+
+════════════════════════════════════════════════════════════
+ 🆘 ERROS COMUNS
+════════════════════════════════════════════════════════════
+
+❓ "Janela abriu e fechou"
+   → Execute INICIAR ou Run.bat novamente
+   → Veja a mensagem de erro
+
+❓ "Não consigo acessar http://localhost:3000/admin"
+   → Pressione F5 para recarregar
+   → Tente em outro navegador
+
+❓ "QR Code não apareceu"
+   → Feche (Ctrl+C) e execute novamente
+   → Atualize WhatsApp no celular
+
+❓ "Bot não responde mensagens"
+   → Abra o painel (http://localhost:3000/admin)
+   → Verifique a configuração
+   → Teste enviando: "oi", "olá" ou "menu"
+
+
+════════════════════════════════════════════════════════════
+ 📋 ARQUIVOS NESTA PASTA
+════════════════════════════════════════════════════════════
+
+INICIAR             ← Clique aqui!
+Run.bat             ← Ou aqui
+whatsapp-bot.exe    ← Programa
+data/               ← Histórico de clientes
+config.json         ← Configuração
+public/             ← Interface web
+LEIA-ME.txt         ← Este arquivo
+
+
+════════════════════════════════════════════════════════════
+ ✅ TUDO PRONTO!
+════════════════════════════════════════════════════════════
+
+1. Clique em INICIAR
+2. Escaneia o QR Code
+3. Configure no painel
+4. Pronto! Bot funcionando! 🎉
+
+Versão 1.0
+
+
