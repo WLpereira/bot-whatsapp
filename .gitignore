@@ -9,6 +9,8 @@ dist/
 
 # Autenticação WhatsApp
 .wwebjs_auth/
+data/.wwebjs_auth*/
+data/*.sqlite
 
 # Logs
 *.log
