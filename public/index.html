@@ -1292,6 +1292,11 @@
             async function api(path, opts) {
                 opts = opts || {};
                 opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+                if (!opts.method || opts.method.toUpperCase() === 'GET') {
+                    var sep = path.indexOf('?') >= 0 ? '&' : '?';
+                    path = path + sep + '_ts=' + Date.now();
+                    opts.cache = 'no-store';
+                }
                 var r = await fetch(path, opts);
                 if (r.status === 401) { location.reload(); throw new Error('unauth'); }
                 return r.json();
@@ -1499,6 +1504,10 @@
                 checkWaStatus();
                 qs('btn-wa-connect').addEventListener('click', function () {
                     var btn = qs('btn-wa-connect'); btn.disabled = true; btn.textContent = 'Iniciando...';
+                    var area = qs('qr-area');
+                    show('qr-wrapper');
+                    area.style.cssText = 'width:260px;height:260px;border:3px dashed var(--border);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text2);flex-direction:column;gap:8px';
+                    area.innerHTML = '<span style="font-size:28px">&#8987;</span><span>Inicializando WhatsApp...</span>';
                     api('/api/whatsapp/init', { method: 'POST' }).then(function () {
                         btn.disabled = false; btn.innerHTML = '&#9654; Conectar WhatsApp';
                         prevWaStatus = null; checkWaStatus();
