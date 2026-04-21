@@ -36,6 +36,35 @@ if (isPackaged) basePath = process.cwd();
 
 let chromeInstallAttempted = false;
 
+function findChromeExecutable(rootDir) {
+    if (!rootDir || !fs.existsSync(rootDir)) return undefined;
+    const executableNames = process.platform === 'win32' ? ['chrome.exe'] : ['chrome'];
+    const queue = [rootDir];
+
+    while (queue.length) {
+        const currentDir = queue.shift();
+        let entries = [];
+        try {
+            entries = fs.readdirSync(currentDir, { withFileTypes: true });
+        } catch (e) {
+            continue;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                queue.push(fullPath);
+                continue;
+            }
+            if (!executableNames.includes(entry.name)) continue;
+            if (process.platform !== 'win32' && !fullPath.includes('chrome-linux')) continue;
+            return fullPath;
+        }
+    }
+
+    return undefined;
+}
+
 function resolveWritableDataDir() {
     const candidates = [
         process.env.DATA_DIR,
@@ -62,6 +91,8 @@ function resolveChromeExecutable() {
         if (fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) return process.env.PUPPETEER_EXECUTABLE_PATH;
         console.warn(`[Boot] Ignorando PUPPETEER_EXECUTABLE_PATH invalido: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
     }
+    const cachedChrome = findChromeExecutable(process.env.PUPPETEER_CACHE_DIR);
+    if (cachedChrome) return cachedChrome;
     if (!puppeteer || typeof puppeteer.executablePath !== 'function') return undefined;
     try {
         const executable = puppeteer.executablePath();
@@ -82,19 +113,21 @@ function ensureChromeInstalled() {
     chromeInstallAttempted = true;
     try {
         const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-        console.log('[Boot] Chrome nao encontrado. Instalando via Puppeteer...');
-        execFileSync(npxCommand, ['puppeteer', 'browsers', 'install', 'chrome'], {
+        console.log(`[Boot] Chrome nao encontrado. Instalando via Puppeteer em ${process.env.PUPPETEER_CACHE_DIR}...`);
+        const output = execFileSync(npxCommand, ['puppeteer', 'browsers', 'install', 'chrome', '--path', process.env.PUPPETEER_CACHE_DIR], {
             cwd: basePath,
             env: process.env,
             stdio: 'pipe'
         });
+        if (output) console.log(output.toString());
         const executableAfterInstall = resolveChromeExecutable();
         if (executableAfterInstall) {
             console.log(`[Boot] Chrome instalado em ${executableAfterInstall}`);
             return executableAfterInstall;
         }
     } catch (e) {
-        console.error('[Boot] Falha ao instalar Chrome automaticamente:', e.message);
+        const details = [e.stdout?.toString(), e.stderr?.toString(), e.message].filter(Boolean).join('\n');
+        console.error('[Boot] Falha ao instalar Chrome automaticamente:', details);
     }
 
     return undefined;
