@@ -1436,6 +1436,8 @@
                         var actions = u.is_paused
                             ? '<button class="btn btn-primary btn-sm" onclick="adminResume(' + u.id + ')">&#9654; Retomar</button>'
                             : '<button class="btn btn-warning btn-sm" onclick="adminPause(' + u.id + ')">&#9208; Pausar</button>';
+                        actions += ' <button class="btn btn-blue btn-sm" onclick="adminReconnect(' + u.id + ')">🔄 Reconectar WA</button>';
+                        actions += ' <button class="btn btn-danger btn-sm" onclick="adminDisconnect(' + u.id + ')">🔌 Desconectar</button>';
                         actions += ' <button class="btn btn-danger btn-sm" onclick="adminDel(' + u.id + ',\'' + esc(u.username) + '\')">Excluir</button>';
                         tr.innerHTML = '<td><b>' + esc(u.username) + '</b></td><td>' + waB + '</td><td>' + pB + '</td><td>' + dt + '</td><td><div class="flex gap-1 wrap">' + actions + '</div></td>';
                         tbody.appendChild(tr);
@@ -1448,6 +1450,24 @@
             window.adminDel = async function (id, name) {
                 if (!confirm('Excluir usuário "' + name + '"? Esta ação não pode ser desfeita.')) return;
                 await api('/api/users/' + id, { method: 'DELETE' }); loadUsersTable(); loadAdminDashboard(); loadHistoryFilter();
+            };
+            window.adminReconnect = async function (id) {
+                var btn = event.target;
+                btn.disabled = true;
+                btn.textContent = 'Reconectando...';
+                try {
+                    await api('/api/admin/users/' + id + '/reconnect', { method: 'POST' });
+                    setTimeout(function () { loadUsersTable(); loadAdminDashboard(); }, 2000);
+                } catch (e) {
+                    btn.disabled = false;
+                    btn.textContent = 'Reconectar';
+                }
+            };
+            window.adminDisconnect = async function (id) {
+                if (!confirm('Desconectar o WhatsApp deste usuário?')) return;
+                await api('/api/admin/users/' + id + '/disconnect', { method: 'POST' });
+                loadUsersTable();
+                loadAdminDashboard();
             };
 
             async function createUser() {

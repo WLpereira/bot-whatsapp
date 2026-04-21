@@ -16,3 +16,13 @@ services:
         value: false
       - key: PUPPETEER_CACHE_DIR
         value: /opt/render/project/src/.cache/puppeteer
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bot-whatsapp-db
+          property: connectionString
+
+databases:
+  - name: bot-whatsapp-db
+    engine: postgres
+    plan: free
+    ipAllowList: []
