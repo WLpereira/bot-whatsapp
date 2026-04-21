@@ -40,11 +40,18 @@ function resolveWritableDataDir() {
 }
 
 function resolveChromeExecutable() {
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        if (fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) return process.env.PUPPETEER_EXECUTABLE_PATH;
+        console.warn(`[Boot] Ignorando PUPPETEER_EXECUTABLE_PATH invalido: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
+    }
     if (!puppeteer || typeof puppeteer.executablePath !== 'function') return undefined;
     try {
-        return puppeteer.executablePath();
+        const executable = puppeteer.executablePath();
+        if (executable && fs.existsSync(executable)) return executable;
+        console.warn('[Boot] Puppeteer nao retornou um executavel Chrome valido');
+        return undefined;
     } catch (e) {
+        console.warn('[Boot] Falha ao resolver executavel do Chrome pelo Puppeteer:', e.message);
         return undefined;
     }
 }
