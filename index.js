@@ -6,6 +6,22 @@ const sqlite3 = require('sqlite3').verbose();
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+const { execFileSync } = require('child_process');
+
+const runtimeBasePath = process.cwd();
+const defaultCacheRoot = path.join(runtimeBasePath, '.cache');
+const defaultPuppeteerCache = path.join(defaultCacheRoot, 'puppeteer');
+
+if (!process.env.XDG_CACHE_HOME || process.env.XDG_CACHE_HOME === '/opt/render/.cache') {
+    process.env.XDG_CACHE_HOME = defaultCacheRoot;
+}
+if (!process.env.PUPPETEER_CACHE_DIR || process.env.PUPPETEER_CACHE_DIR === '/opt/render/.cache/puppeteer') {
+    process.env.PUPPETEER_CACHE_DIR = defaultPuppeteerCache;
+}
+
+fs.mkdirSync(process.env.XDG_CACHE_HOME, { recursive: true });
+fs.mkdirSync(process.env.PUPPETEER_CACHE_DIR, { recursive: true });
+
 let puppeteer = null;
 
 try {
@@ -17,6 +33,8 @@ try {
 const isPackaged = typeof process.pkg !== 'undefined';
 let basePath = (typeof __dirname !== 'undefined' && __dirname) ? __dirname : process.cwd();
 if (isPackaged) basePath = process.cwd();
+
+let chromeInstallAttempted = false;
 
 function resolveWritableDataDir() {
     const candidates = [
@@ -56,6 +74,32 @@ function resolveChromeExecutable() {
     }
 }
 
+function ensureChromeInstalled() {
+    const existingExecutable = resolveChromeExecutable();
+    if (existingExecutable) return existingExecutable;
+    if (!puppeteer || chromeInstallAttempted) return undefined;
+
+    chromeInstallAttempted = true;
+    try {
+        const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+        console.log('[Boot] Chrome nao encontrado. Instalando via Puppeteer...');
+        execFileSync(npxCommand, ['puppeteer', 'browsers', 'install', 'chrome'], {
+            cwd: basePath,
+            env: process.env,
+            stdio: 'pipe'
+        });
+        const executableAfterInstall = resolveChromeExecutable();
+        if (executableAfterInstall) {
+            console.log(`[Boot] Chrome instalado em ${executableAfterInstall}`);
+            return executableAfterInstall;
+        }
+    } catch (e) {
+        console.error('[Boot] Falha ao instalar Chrome automaticamente:', e.message);
+    }
+
+    return undefined;
+}
+
 const dataDir = resolveWritableDataDir();
 const dbPath = process.env.DB_PATH || path.join(dataDir, 'db.sqlite');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -92,7 +136,7 @@ function createClientForUser(userId) {
         '--disable-extensions', '--disable-background-networking'
     ];
     const puppeteerOpts = { headless: true, args: puppeteerArgs };
-    const chromeExecutable = resolveChromeExecutable();
+    const chromeExecutable = ensureChromeInstalled();
     if (chromeExecutable) puppeteerOpts.executablePath = chromeExecutable;
     const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
     client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); });
