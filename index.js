@@ -6,14 +6,54 @@ const sqlite3 = require('sqlite3').verbose();
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+let puppeteer = null;
+
+try {
+    puppeteer = require('puppeteer');
+} catch (e) {
+    puppeteer = null;
+}
 
 const isPackaged = typeof process.pkg !== 'undefined';
 let basePath = (typeof __dirname !== 'undefined' && __dirname) ? __dirname : process.cwd();
 if (isPackaged) basePath = process.cwd();
 
-const dbPath = path.join(basePath, 'data', 'db.sqlite');
-const dataDir = path.join(basePath, 'data');
+function resolveWritableDataDir() {
+    const candidates = [
+        process.env.DATA_DIR,
+        process.env.RENDER_DISK_PATH ? path.join(process.env.RENDER_DISK_PATH, 'bot-whatsapp') : null,
+        fs.existsSync('/var/data') ? '/var/data/bot-whatsapp' : null,
+        path.join(basePath, 'data')
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+        try {
+            fs.mkdirSync(candidate, { recursive: true });
+            fs.accessSync(candidate, fs.constants.W_OK);
+            return candidate;
+        } catch (e) {
+            // tenta o proximo caminho disponivel
+        }
+    }
+
+    return path.join(basePath, 'data');
+}
+
+function resolveChromeExecutable() {
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+    if (!puppeteer || typeof puppeteer.executablePath !== 'function') return undefined;
+    try {
+        return puppeteer.executablePath();
+    } catch (e) {
+        return undefined;
+    }
+}
+
+const dataDir = resolveWritableDataDir();
+const dbPath = process.env.DB_PATH || path.join(dataDir, 'db.sqlite');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+console.log(`[Boot] dataDir=${dataDir}`);
+console.log(`[Boot] dbPath=${dbPath}`);
 
 const db = new sqlite3.Database(dbPath);
 db.serialize(() => {
@@ -45,7 +85,8 @@ function createClientForUser(userId) {
         '--disable-extensions', '--disable-background-networking'
     ];
     const puppeteerOpts = { headless: true, args: puppeteerArgs };
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) puppeteerOpts.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    const chromeExecutable = resolveChromeExecutable();
+    if (chromeExecutable) puppeteerOpts.executablePath = chromeExecutable;
     const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
     client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); });
     client.on('ready', () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; console.log(`[User ${userId}] Conectado`); });
