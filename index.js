@@ -169,7 +169,11 @@ db.serialize(() => {
     });
 });
 
-const clients = {}, qrCodes = {}, connectedUsers = new Set(), clientErrors = {};
+const clients = {}, qrCodes = {}, connectedUsers = new Set(), clientErrors = {}, clientStates = {};
+
+function setClientState(userId, status, message) {
+    clientStates[userId] = { status, message: message || null, updatedAt: Date.now() };
+}
 
 function getUserAuthPath(userId) { return path.join(dataDir, `.wwebjs_auth_${userId}`); }
 
@@ -177,9 +181,11 @@ function createClientForUser(userId) {
     if (clients[userId]) return;
     delete clientErrors[userId];
     delete qrCodes[userId];
+    setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
     const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
     if (!chromeExecutable) {
         clientErrors[userId] = chromePreparationError || 'Chrome indisponivel para abrir o WhatsApp';
+        setClientState(userId, 'error', clientErrors[userId]);
         return;
     }
     const authPath = getUserAuthPath(userId);
@@ -192,13 +198,22 @@ function createClientForUser(userId) {
     ];
     const puppeteerOpts = { headless: true, args: puppeteerArgs, executablePath: chromeExecutable };
     const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
-    client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); });
-    client.on('ready', () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; console.log(`[User ${userId}] Conectado`); });
+    client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp'); });
+    client.on('authenticated', () => {
+        delete qrCodes[userId];
+        setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...');
+    });
+    client.on('loading_screen', (percent, message) => {
+        const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`;
+        setClientState(userId, 'connecting', text);
+    });
+    client.on('ready', () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); console.log(`[User ${userId}] Conectado`); });
     client.on('auth_failure', (msg) => {
         clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp';
         delete qrCodes[userId];
         connectedUsers.delete(userId);
         delete clients[userId];
+        setClientState(userId, 'error', clientErrors[userId]);
         console.error(`[User ${userId}] Auth failure:`, msg || 'sem detalhes');
     });
     client.on('message', async (msg) => {
@@ -235,11 +250,13 @@ function createClientForUser(userId) {
         delete clients[userId];
         connectedUsers.delete(userId);
         delete qrCodes[userId];
+        setClientState(userId, clientErrors[userId] ? 'error' : 'disconnected', clientErrors[userId] || 'Desconectado');
     });
     clients[userId] = client;
     client.initialize().catch(err => {
         console.error(`[User ${userId}] Erro ao inicializar:`, err.message);
         clientErrors[userId] = err.message || 'Erro ao inicializar WhatsApp';
+        setClientState(userId, 'error', clientErrors[userId]);
         delete clients[userId]; // volta para 'disconnected' para o usuario poder tentar novamente
         delete qrCodes[userId];
         connectedUsers.delete(userId);
@@ -349,9 +366,14 @@ app.get('/api/whatsapp/status', auth, (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
     const uid = req.session.user.id;
+    const authPath = getUserAuthPath(uid);
+    if (!clients[uid] && !clientErrors[uid] && fs.existsSync(authPath)) {
+        createClientForUser(uid);
+    }
     if (connectedUsers.has(uid)) return res.json({ status: 'connected' });
     if (qrCodes[uid]) return res.json({ status: 'qr' });
-    if (clients[uid]) return res.json({ status: 'connecting' });
+    if (clientStates[uid]) return res.json(clientStates[uid]);
+    if (clients[uid]) return res.json({ status: 'connecting', message: 'Abrindo sessao do WhatsApp...' });
     if (clientErrors[uid]) return res.json({ status: 'error', message: clientErrors[uid] });
     res.json({ status: 'disconnected' });
 });
@@ -399,6 +421,7 @@ app.post('/api/whatsapp/logout', auth, async (req, res) => {
     delete clientErrors[req.session.user.id];
     delete qrCodes[req.session.user.id];
     connectedUsers.delete(req.session.user.id);
+    setClientState(req.session.user.id, 'disconnected', 'Desconectado');
     if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
     res.json({ success: true });
 });

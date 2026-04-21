@@ -1548,8 +1548,15 @@
                         startWaTimer();
                     } else if (d.status === 'connecting') {
                         bar.classList.add('status-connecting'); dot.className = 'status-dot dot-blue';
-                        txt.textContent = 'Iniciando, aguarde o QR Code...'; mini.textContent = 'Conectando'; mini.style.color = 'var(--blue)';
+                        txt.textContent = d.message || 'Iniciando, aguarde o QR Code...'; mini.textContent = 'Conectando'; mini.style.color = 'var(--blue)';
                         show('qr-wrapper');
+                        startWaTimer();
+                    } else if (d.status === 'authenticated') {
+                        bar.classList.add('status-connected'); dot.className = 'status-dot dot-green';
+                        txt.textContent = d.message || 'WhatsApp autenticado. Finalizando conexao...'; mini.textContent = 'Autenticado'; mini.style.color = 'var(--accent)';
+                        show('qr-wrapper');
+                        qs('qr-area').style.cssText = 'width:260px;min-height:180px;border:3px dashed var(--accent);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text);flex-direction:column;gap:8px;padding:18px;text-align:center';
+                        qs('qr-area').innerHTML = '<span style="font-size:28px">&#10003;</span><span>' + (d.message || 'WhatsApp autenticado. Finalizando conexao...') + '</span>';
                         startWaTimer();
                     } else if (d.status === 'error') {
                         bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
