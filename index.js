@@ -35,6 +35,8 @@ let basePath = (typeof __dirname !== 'undefined' && __dirname) ? __dirname : pro
 if (isPackaged) basePath = process.cwd();
 
 let chromeInstallAttempted = false;
+let chromeExecutablePath = undefined;
+let chromePreparationError = null;
 
 function findChromeExecutable(rootDir) {
     if (!rootDir || !fs.existsSync(rootDir)) return undefined;
@@ -133,6 +135,21 @@ function ensureChromeInstalled() {
     return undefined;
 }
 
+function prepareChromeForRuntime() {
+    chromePreparationError = null;
+    chromeExecutablePath = ensureChromeInstalled();
+
+    if (chromeExecutablePath) {
+        process.env.PUPPETEER_EXECUTABLE_PATH = chromeExecutablePath;
+        console.log(`[Boot] chromeExecutable=${chromeExecutablePath}`);
+        return chromeExecutablePath;
+    }
+
+    chromePreparationError = 'Chrome nao disponivel para iniciar o WhatsApp. Verifique os logs de boot do Render.';
+    console.error(`[Boot] ${chromePreparationError}`);
+    return undefined;
+}
+
 const dataDir = resolveWritableDataDir();
 const dbPath = process.env.DB_PATH || path.join(dataDir, 'db.sqlite');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -160,6 +177,11 @@ function createClientForUser(userId) {
     if (clients[userId]) return;
     delete clientErrors[userId];
     delete qrCodes[userId];
+    const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
+    if (!chromeExecutable) {
+        clientErrors[userId] = chromePreparationError || 'Chrome indisponivel para abrir o WhatsApp';
+        return;
+    }
     const authPath = getUserAuthPath(userId);
     if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
     const puppeteerArgs = [
@@ -168,9 +190,7 @@ function createClientForUser(userId) {
         '--no-first-run', '--no-zygote', '--single-process',
         '--disable-extensions', '--disable-background-networking'
     ];
-    const puppeteerOpts = { headless: true, args: puppeteerArgs };
-    const chromeExecutable = ensureChromeInstalled();
-    if (chromeExecutable) puppeteerOpts.executablePath = chromeExecutable;
+    const puppeteerOpts = { headless: true, args: puppeteerArgs, executablePath: chromeExecutable };
     const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
     client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); });
     client.on('ready', () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; console.log(`[User ${userId}] Conectado`); });
@@ -400,4 +420,7 @@ function startServer(port = process.env.PORT || 3000) {
     });
 }
 
-try { startServer(); } catch (err) { console.error('Erro:', err); process.exit(1); }
+try {
+    prepareChromeForRuntime();
+    startServer();
+} catch (err) { console.error('Erro:', err); process.exit(1); }
