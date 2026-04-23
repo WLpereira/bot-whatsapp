@@ -494,247 +494,247 @@ async function createClientForUser(userId) {
     }
 
     clientInitLocks[userId] = (async () => {
-    await ensureSessionRecord(userId);
-    delete clientErrors[userId];
-    delete qrCodes[userId];
-    delete pairingCodes[userId];
-    setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
-    if (pool) await patchWaSession(userId, {
-        desired_state: 'connected',
-        status: 'connecting',
-        status_message: 'Abrindo sessao do WhatsApp...',
-        last_error: null,
-        qr_code: null,
-        pairing_code: null,
-        worker_host: workerInstanceId
-    });
-
-    const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
-    if (!chromeExecutable) {
-        clientErrors[userId] = chromePreparationError || 'Chrome indisponivel para abrir o WhatsApp';
-        setClientState(userId, 'error', clientErrors[userId]);
+        await ensureSessionRecord(userId);
+        delete clientErrors[userId];
+        delete qrCodes[userId];
+        delete pairingCodes[userId];
+        setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
         if (pool) await patchWaSession(userId, {
-            status: 'error',
-            status_message: clientErrors[userId],
-            last_error: clientErrors[userId],
-            connected: 0
+            desired_state: 'connected',
+            status: 'connecting',
+            status_message: 'Abrindo sessao do WhatsApp...',
+            last_error: null,
+            qr_code: null,
+            pairing_code: null,
+            worker_host: workerInstanceId
         });
-        return;
-    }
 
-    const puppeteerArgs = [
-        '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
-        '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
-        '--no-first-run', '--no-zygote',
-        '--disable-extensions', '--disable-background-networking',
-        '--mute-audio',
-        '--no-default-browser-check'
-    ];
-
-    const puppeteerOpts = {
-        headless: true,
-        args: puppeteerArgs,
-        executablePath: chromeExecutable,
-        timeout: 120000,
-        protocolTimeout: 120000
-    };
-
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            clientId: getUserSessionId(userId),
-            dataPath: dataDir,
-            store: remoteSessionStore,
-            backupSyncIntervalMs: 60000
-        }),
-        puppeteer: puppeteerOpts,
-        takeoverOnConflict: true,
-        authTimeoutMs: 180000,
-        qrMaxRetries: 0
-    });
-
-    client.on('qr', (qr) => {
-        qrCodes[userId] = qr;
-        delete pairingCodes[userId];
-        connectedUsers.delete(userId);
-        setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp');
-        if (pool) {
-            patchWaSession(userId, {
-                status: 'qr',
-                status_message: 'Escaneie o QR Code no WhatsApp',
-                qr_code: qr,
-                pairing_code: null,
-                connected: 0,
-                last_error: null,
-                worker_host: workerInstanceId
-            }).catch(() => { });
-        }
-    });
-    client.on('code', (code) => {
-        pairingCodes[userId] = code;
-        delete pairingJobs[userId];
-        delete qrCodes[userId];
-        setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
-        console.log(`[User ${userId}] Codigo de pareamento: ${code}`);
-        if (pool) {
-            patchWaSession(userId, {
-                status: 'pairing_code',
-                status_message: 'Use o codigo no WhatsApp para conectar',
-                qr_code: null,
-                pairing_code: code,
-                connected: 0,
-                last_error: null,
-                worker_host: workerInstanceId
-            }).catch(() => { });
-        }
-    });
-    client.on('authenticated', () => {
-        delete qrCodes[userId];
-        delete pairingCodes[userId];
-        delete pairingJobs[userId];
-        setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...');
-        if (pool) {
-            patchWaSession(userId, {
-                status: 'authenticated',
-                status_message: 'WhatsApp autenticado. Finalizando conexao...',
-                qr_code: null,
-                pairing_code: null,
-                connected: 0,
-                last_error: null,
-                worker_host: workerInstanceId
-            }).catch(() => { });
-        }
-    });
-    client.on('loading_screen', (percent, message) => {
-        const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`;
-        setClientState(userId, 'connecting', text);
-        if (pool) {
-            patchWaSession(userId, {
-                status: 'connecting',
-                status_message: text,
-                worker_host: workerInstanceId
-            }).catch(() => { });
-        }
-    });
-    client.on('change_state', async (state) => {
-        if (state === 'CONNECTED') {
-            connectedUsers.add(userId);
-            setClientState(userId, 'connected', 'Conectado');
-            try {
-                if (pool) await patchWaSession(userId, {
-                    connected: 1,
-                    desired_state: 'connected',
-                    status: 'connected',
-                    status_message: 'Conectado',
-                    qr_code: null,
-                    pairing_code: null,
-                    last_error: null,
-                    worker_host: workerInstanceId
-                });
-            } catch (e) { }
-            return;
-        }
-
-        if (state === 'OPENING' || state === 'PAIRING') {
-            setClientState(userId, 'connecting', `Conectando ao WhatsApp (${state})...`);
-            if (pool) {
-                patchWaSession(userId, {
-                    status: 'connecting',
-                    status_message: `Conectando ao WhatsApp (${state})...`,
-                    worker_host: workerInstanceId
-                }).catch(() => { });
-            }
-        }
-    });
-    client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await patchWaSession(userId, { connected: 1, desired_state: 'connected', status: 'connected', status_message: 'Conectado', qr_code: null, pairing_code: null, last_error: null, worker_host: workerInstanceId }); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
-    client.on('remote_session_saved', async () => {
-        try {
-            if (pool) await db.run("UPDATE wa_sessions SET last_update=NOW() WHERE user_id=$1", [userId]);
-        } catch (e) { }
-        console.log(`[User ${userId}] Sessao remota salva`);
-    });
-    client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); if (pool) { patchWaSession(userId, { connected: 0, status: 'error', status_message: clientErrors[userId], last_error: clientErrors[userId], qr_code: null, pairing_code: null, worker_host: workerInstanceId }).catch(() => { }); } });
-
-    client.on('message', async (msg) => {
-        // Ignore group chats, status/stories and messages sent by this own account.
-        if (msg.from?.endsWith('@g.us')) return;
-        if (msg.from === 'status@broadcast') return;
-        if (msg.fromMe) return;
-        const body = (msg.body || '').toLowerCase().trim();
-        const today = new Date().toISOString().split('T')[0];
-        try {
-            if (pool) await db.run("INSERT INTO messages (user_id, sender, msg, opt, created_date) VALUES ($1,$2,$3,$4,$5)", [userId, msg.from, msg.body, body, today]);
-        } catch (e) { }
-
-        try {
-            if (!pool) return;
-            const user = await db.get("SELECT is_paused FROM users WHERE id=$1", [userId]);
-            if (user?.is_paused) return;
-            const blocked = await db.get("SELECT phone_number FROM blacklist WHERE user_id=$1 AND phone_number=$2", [userId, msg.from]);
-            if (blocked) return;
-            const kw = await db.all("SELECT response FROM keywords WHERE user_id=$1 AND keyword LIKE $2", [userId, `%${body}%`]);
-            if (kw?.length) { await msg.reply(kw[0].response); return; }
-            const opts = await db.all("SELECT * FROM options WHERE user_id=$1", [userId]);
-            const opt = opts?.find(o => o.key_num === body);
-            if (opt) { await msg.reply(opt.response); return; }
-            if (opts?.length > 0) {
-                const list = opts.map(o => `${o.key_num} - ${o.title}`).join('\n');
-                const cfg = await db.get("SELECT menu_message FROM configs WHERE user_id=$1", [userId]);
-                await msg.reply((cfg?.menu_message || 'Menu:').replace('{OPTIONS}', list));
-                return;
-            }
-            const cfg = await db.get("SELECT default_reply FROM configs WHERE user_id=$1", [userId]);
-            if (cfg?.default_reply) await msg.reply(cfg.default_reply);
-        } catch (e) { console.error('Erro ao processar mensagem:', e.message); }
-    });
-
-    client.on('disconnected', (reason) => {
-        if (reason && reason !== 'NAVIGATION') clientErrors[userId] = `Desconectado: ${reason}`;
-        delete clients[userId];
-        connectedUsers.delete(userId);
-        delete qrCodes[userId];
-        delete pairingCodes[userId];
-        delete pairingJobs[userId];
-        setClientState(userId, clientErrors[userId] ? 'error' : 'disconnected', clientErrors[userId] || 'Desconectado');
-        if (pool) {
-            patchWaSession(userId, {
-                connected: 0,
-                status: clientErrors[userId] ? 'error' : 'disconnected',
-                status_message: clientErrors[userId] || 'Desconectado',
-                last_error: clientErrors[userId] || null,
-                qr_code: null,
-                pairing_code: null,
-                worker_host: workerInstanceId
-            }).catch(() => { });
-        }
-    });
-
-    clients[userId] = client;
-    client.initialize().catch(err => {
-        const rawMsg = err && err.message ? err.message : String(err);
-        console.error(`[User ${userId}] Erro ao inicializar:`, rawMsg);
-        if (rawMsg.includes('The browser is already running for')) {
-            clientErrors[userId] = 'Sessao do navegador ja esta em uso. Aguarde alguns segundos e tente novamente.';
-        } else {
-            clientErrors[userId] = rawMsg || 'Erro ao inicializar WhatsApp';
-        }
-        setClientState(userId, 'error', clientErrors[userId]);
-        delete clients[userId];
-        delete qrCodes[userId];
-        delete pairingCodes[userId];
-        delete pairingJobs[userId];
-        connectedUsers.delete(userId);
-        if (pool) {
-            patchWaSession(userId, {
-                connected: 0,
+        const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
+        if (!chromeExecutable) {
+            clientErrors[userId] = chromePreparationError || 'Chrome indisponivel para abrir o WhatsApp';
+            setClientState(userId, 'error', clientErrors[userId]);
+            if (pool) await patchWaSession(userId, {
                 status: 'error',
                 status_message: clientErrors[userId],
                 last_error: clientErrors[userId],
-                qr_code: null,
-                pairing_code: null,
-                worker_host: workerInstanceId
-            }).catch(() => { });
+                connected: 0
+            });
+            return;
         }
-    });
+
+        const puppeteerArgs = [
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
+            '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
+            '--no-first-run', '--no-zygote',
+            '--disable-extensions', '--disable-background-networking',
+            '--mute-audio',
+            '--no-default-browser-check'
+        ];
+
+        const puppeteerOpts = {
+            headless: true,
+            args: puppeteerArgs,
+            executablePath: chromeExecutable,
+            timeout: 120000,
+            protocolTimeout: 120000
+        };
+
+        const client = new Client({
+            authStrategy: new RemoteAuth({
+                clientId: getUserSessionId(userId),
+                dataPath: dataDir,
+                store: remoteSessionStore,
+                backupSyncIntervalMs: 60000
+            }),
+            puppeteer: puppeteerOpts,
+            takeoverOnConflict: true,
+            authTimeoutMs: 180000,
+            qrMaxRetries: 0
+        });
+
+        client.on('qr', (qr) => {
+            qrCodes[userId] = qr;
+            delete pairingCodes[userId];
+            connectedUsers.delete(userId);
+            setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp');
+            if (pool) {
+                patchWaSession(userId, {
+                    status: 'qr',
+                    status_message: 'Escaneie o QR Code no WhatsApp',
+                    qr_code: qr,
+                    pairing_code: null,
+                    connected: 0,
+                    last_error: null,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
+        client.on('code', (code) => {
+            pairingCodes[userId] = code;
+            delete pairingJobs[userId];
+            delete qrCodes[userId];
+            setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
+            console.log(`[User ${userId}] Codigo de pareamento: ${code}`);
+            if (pool) {
+                patchWaSession(userId, {
+                    status: 'pairing_code',
+                    status_message: 'Use o codigo no WhatsApp para conectar',
+                    qr_code: null,
+                    pairing_code: code,
+                    connected: 0,
+                    last_error: null,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
+        client.on('authenticated', () => {
+            delete qrCodes[userId];
+            delete pairingCodes[userId];
+            delete pairingJobs[userId];
+            setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...');
+            if (pool) {
+                patchWaSession(userId, {
+                    status: 'authenticated',
+                    status_message: 'WhatsApp autenticado. Finalizando conexao...',
+                    qr_code: null,
+                    pairing_code: null,
+                    connected: 0,
+                    last_error: null,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
+        client.on('loading_screen', (percent, message) => {
+            const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`;
+            setClientState(userId, 'connecting', text);
+            if (pool) {
+                patchWaSession(userId, {
+                    status: 'connecting',
+                    status_message: text,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
+        client.on('change_state', async (state) => {
+            if (state === 'CONNECTED') {
+                connectedUsers.add(userId);
+                setClientState(userId, 'connected', 'Conectado');
+                try {
+                    if (pool) await patchWaSession(userId, {
+                        connected: 1,
+                        desired_state: 'connected',
+                        status: 'connected',
+                        status_message: 'Conectado',
+                        qr_code: null,
+                        pairing_code: null,
+                        last_error: null,
+                        worker_host: workerInstanceId
+                    });
+                } catch (e) { }
+                return;
+            }
+
+            if (state === 'OPENING' || state === 'PAIRING') {
+                setClientState(userId, 'connecting', `Conectando ao WhatsApp (${state})...`);
+                if (pool) {
+                    patchWaSession(userId, {
+                        status: 'connecting',
+                        status_message: `Conectando ao WhatsApp (${state})...`,
+                        worker_host: workerInstanceId
+                    }).catch(() => { });
+                }
+            }
+        });
+        client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await patchWaSession(userId, { connected: 1, desired_state: 'connected', status: 'connected', status_message: 'Conectado', qr_code: null, pairing_code: null, last_error: null, worker_host: workerInstanceId }); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
+        client.on('remote_session_saved', async () => {
+            try {
+                if (pool) await db.run("UPDATE wa_sessions SET last_update=NOW() WHERE user_id=$1", [userId]);
+            } catch (e) { }
+            console.log(`[User ${userId}] Sessao remota salva`);
+        });
+        client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); if (pool) { patchWaSession(userId, { connected: 0, status: 'error', status_message: clientErrors[userId], last_error: clientErrors[userId], qr_code: null, pairing_code: null, worker_host: workerInstanceId }).catch(() => { }); } });
+
+        client.on('message', async (msg) => {
+            // Ignore group chats, status/stories and messages sent by this own account.
+            if (msg.from?.endsWith('@g.us')) return;
+            if (msg.from === 'status@broadcast') return;
+            if (msg.fromMe) return;
+            const body = (msg.body || '').toLowerCase().trim();
+            const today = new Date().toISOString().split('T')[0];
+            try {
+                if (pool) await db.run("INSERT INTO messages (user_id, sender, msg, opt, created_date) VALUES ($1,$2,$3,$4,$5)", [userId, msg.from, msg.body, body, today]);
+            } catch (e) { }
+
+            try {
+                if (!pool) return;
+                const user = await db.get("SELECT is_paused FROM users WHERE id=$1", [userId]);
+                if (user?.is_paused) return;
+                const blocked = await db.get("SELECT phone_number FROM blacklist WHERE user_id=$1 AND phone_number=$2", [userId, msg.from]);
+                if (blocked) return;
+                const kw = await db.all("SELECT response FROM keywords WHERE user_id=$1 AND keyword LIKE $2", [userId, `%${body}%`]);
+                if (kw?.length) { await msg.reply(kw[0].response); return; }
+                const opts = await db.all("SELECT * FROM options WHERE user_id=$1", [userId]);
+                const opt = opts?.find(o => o.key_num === body);
+                if (opt) { await msg.reply(opt.response); return; }
+                if (opts?.length > 0) {
+                    const list = opts.map(o => `${o.key_num} - ${o.title}`).join('\n');
+                    const cfg = await db.get("SELECT menu_message FROM configs WHERE user_id=$1", [userId]);
+                    await msg.reply((cfg?.menu_message || 'Menu:').replace('{OPTIONS}', list));
+                    return;
+                }
+                const cfg = await db.get("SELECT default_reply FROM configs WHERE user_id=$1", [userId]);
+                if (cfg?.default_reply) await msg.reply(cfg.default_reply);
+            } catch (e) { console.error('Erro ao processar mensagem:', e.message); }
+        });
+
+        client.on('disconnected', (reason) => {
+            if (reason && reason !== 'NAVIGATION') clientErrors[userId] = `Desconectado: ${reason}`;
+            delete clients[userId];
+            connectedUsers.delete(userId);
+            delete qrCodes[userId];
+            delete pairingCodes[userId];
+            delete pairingJobs[userId];
+            setClientState(userId, clientErrors[userId] ? 'error' : 'disconnected', clientErrors[userId] || 'Desconectado');
+            if (pool) {
+                patchWaSession(userId, {
+                    connected: 0,
+                    status: clientErrors[userId] ? 'error' : 'disconnected',
+                    status_message: clientErrors[userId] || 'Desconectado',
+                    last_error: clientErrors[userId] || null,
+                    qr_code: null,
+                    pairing_code: null,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
+
+        clients[userId] = client;
+        client.initialize().catch(err => {
+            const rawMsg = err && err.message ? err.message : String(err);
+            console.error(`[User ${userId}] Erro ao inicializar:`, rawMsg);
+            if (rawMsg.includes('The browser is already running for')) {
+                clientErrors[userId] = 'Sessao do navegador ja esta em uso. Aguarde alguns segundos e tente novamente.';
+            } else {
+                clientErrors[userId] = rawMsg || 'Erro ao inicializar WhatsApp';
+            }
+            setClientState(userId, 'error', clientErrors[userId]);
+            delete clients[userId];
+            delete qrCodes[userId];
+            delete pairingCodes[userId];
+            delete pairingJobs[userId];
+            connectedUsers.delete(userId);
+            if (pool) {
+                patchWaSession(userId, {
+                    connected: 0,
+                    status: 'error',
+                    status_message: clientErrors[userId],
+                    last_error: clientErrors[userId],
+                    qr_code: null,
+                    pairing_code: null,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
+        });
     })();
 
     try {
