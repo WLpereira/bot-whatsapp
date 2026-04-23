@@ -532,6 +532,15 @@ async function requestPairingCodeForUser(userId, phone) {
                     }
                 } catch (e) {
                     lastError = e && e.message ? e.message : String(e);
+
+                    // Alguns ambientes/versoes nao suportam PairingCodeLinkUtils.
+                    // Nesses casos, fazemos fallback para QR automaticamente.
+                    if (lastError.includes('PairingCodeLinkUtils')) {
+                        console.warn(`[User ${userId}] Pareamento por codigo indisponivel; usando QR.`);
+                        setClientState(userId, 'qr', 'Conexao por codigo indisponivel aqui. Use o QR Code.');
+                        return;
+                    }
+
                     console.warn(`[User ${userId}] Tentativa ${i + 1}/6 falhou ao gerar codigo: ${lastError}`);
 
                     // Se cliente caiu durante tentativas, tenta recriar automaticamente
@@ -797,7 +806,11 @@ app.post('/api/whatsapp/pairing-code', auth, async (req, res) => {
         const result = await requestPairingCodeForUser(userId, phone);
         res.json({ success: true, pending: true, code: result.code || null });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        const msg = err && err.message ? err.message : 'Erro ao gerar codigo';
+        if (msg.includes('PairingCodeLinkUtils')) {
+            return res.status(400).json({ error: 'Conexao por codigo indisponivel neste ambiente. Use o QR Code.' });
+        }
+        res.status(500).json({ error: msg });
     }
 });
 
