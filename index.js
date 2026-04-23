@@ -504,28 +504,53 @@ async function requestPairingCodeForUser(userId, phone) {
 
     pairingJobs[userId] = true;
     setClientState(userId, 'pairing_pending', 'Gerando codigo de pareamento...');
+    console.log(`[User ${userId}] Iniciando geracao de codigo para ${phoneDigits}`);
 
     (async () => {
+        let lastError = null;
         try {
+            // Da alguns segundos para o cliente inicializar totalmente no Render
+            await wait(8000);
+
             for (let i = 0; i < 6; i++) {
                 if (pairingCodes[userId]) return;
                 try {
+                    const liveClient = clients[userId];
+                    if (!liveClient) {
+                        throw new Error('Cliente nao inicializado para pareamento');
+                    }
+
                     const code = await Promise.race([
-                        client.requestPairingCode(phoneDigits, true, 120000),
+                        liveClient.requestPairingCode(phoneDigits, true, 180000),
                         wait(25000).then(() => { throw new Error('timeout'); })
                     ]);
                     if (code) {
                         pairingCodes[userId] = code;
                         setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
+                        console.log(`[User ${userId}] Codigo gerado com sucesso`);
                         return;
                     }
                 } catch (e) {
+                    lastError = e && e.message ? e.message : String(e);
+                    console.warn(`[User ${userId}] Tentativa ${i + 1}/6 falhou ao gerar codigo: ${lastError}`);
+
+                    // Se cliente caiu durante tentativas, tenta recriar automaticamente
+                    if (!clients[userId]) {
+                        try {
+                            await createClientForUser(userId);
+                        } catch (recreateErr) {
+                            const recreateMsg = recreateErr && recreateErr.message ? recreateErr.message : String(recreateErr);
+                            console.warn(`[User ${userId}] Falha ao recriar cliente: ${recreateMsg}`);
+                        }
+                    }
                     await wait(3000);
                 }
             }
 
             if (!pairingCodes[userId]) {
-                setClientState(userId, 'error', 'Nao foi possivel gerar codigo. Tente novamente.');
+                const detail = lastError ? ` Motivo: ${lastError}` : '';
+                setClientState(userId, 'error', `Nao foi possivel gerar codigo.${detail}`);
+                console.error(`[User ${userId}] Falha final ao gerar codigo.${detail}`);
             }
         } finally {
             delete pairingJobs[userId];
