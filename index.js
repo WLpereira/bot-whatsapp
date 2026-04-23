@@ -1,4 +1,4 @@
-﻿const { Client, LocalAuth } = require('whatsapp-web.js');
+﻿const { Client, RemoteAuth } = require('whatsapp-web.js');
 const express = require('express');
 const session = require('express-session');
 const { Pool } = require('pg');
@@ -130,6 +130,18 @@ if (!process.env.DATABASE_URL && process.env.RENDER === 'true') {
 let pool = null;
 let dbReady = false;
 
+const dataDir = path.join(runtimeBasePath, '.wwebjs_auth');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+function getUserSessionId(userId) {
+    return `user-${userId}`;
+}
+
+function parseUserIdFromSessionName(sessionName) {
+    const match = /^RemoteAuth-user-(\d+)$/.exec(sessionName || '');
+    return match ? parseInt(match[1], 10) : null;
+}
+
 function initPool() {
     if (pool) return pool;
     const dbUrl = process.env.DATABASE_URL;
@@ -174,6 +186,60 @@ const db = {
         return result;
     }
 };
+
+async function ensureSessionRecord(userId) {
+    await db.run(
+        `INSERT INTO wa_sessions (user_id, session_name, connected, last_update)
+         VALUES ($1, $2, 0, NOW())
+         ON CONFLICT (user_id)
+         DO UPDATE SET session_name = EXCLUDED.session_name`,
+        [userId, `RemoteAuth-${getUserSessionId(userId)}`]
+    );
+}
+
+const remoteSessionStore = {
+    async sessionExists({ session }) {
+        const userId = parseUserIdFromSessionName(session);
+        if (!userId) return false;
+        const row = await db.get('SELECT session_blob FROM wa_sessions WHERE user_id=$1', [userId]);
+        return Boolean(row?.session_blob);
+    },
+    async save({ session }) {
+        const userId = parseUserIdFromSessionName(session);
+        if (!userId) throw new Error(`Sessao invalida: ${session}`);
+        const zipPath = `${session}.zip`;
+        const sessionBlob = await fs.promises.readFile(zipPath);
+        await ensureSessionRecord(userId);
+        await db.run(
+            `UPDATE wa_sessions
+             SET session_blob=$1, session_name=$2, last_update=NOW()
+             WHERE user_id=$3`,
+            [sessionBlob, session, userId]
+        );
+    },
+    async extract({ session, path: destinationPath }) {
+        const userId = parseUserIdFromSessionName(session);
+        if (!userId) throw new Error(`Sessao invalida: ${session}`);
+        const row = await db.get('SELECT session_blob FROM wa_sessions WHERE user_id=$1', [userId]);
+        if (!row?.session_blob) throw new Error(`Sessao nao encontrada para ${session}`);
+        await fs.promises.writeFile(destinationPath, row.session_blob);
+    },
+    async delete({ session }) {
+        const userId = parseUserIdFromSessionName(session);
+        if (!userId) return;
+        await db.run(
+            `UPDATE wa_sessions
+             SET session_blob=NULL, connected=0, last_update=NOW()
+             WHERE user_id=$1`,
+            [userId]
+        );
+    }
+};
+
+async function hasStoredSession(userId) {
+    const row = await db.get('SELECT session_blob IS NOT NULL AS has_session FROM wa_sessions WHERE user_id=$1', [userId]);
+    return Boolean(row?.has_session);
+}
 
 async function initDatabase() {
     try {
@@ -236,9 +302,14 @@ async function initDatabase() {
             id SERIAL PRIMARY KEY,
             user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
             session_data TEXT,
+            session_name VARCHAR(255),
+            session_blob BYTEA,
             connected INTEGER DEFAULT 0,
             last_update TIMESTAMP DEFAULT NOW()
         )`);
+
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS session_name VARCHAR(255)');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS session_blob BYTEA');
 
         const admin = await db.get("SELECT * FROM users WHERE role='admin'");
         if (!admin) {
@@ -246,6 +317,11 @@ async function initDatabase() {
                 "INSERT INTO users (username, password_hash, role, created_at) VALUES ($1, $2, $3, NOW())",
                 ['admin', bcrypt.hashSync('admin', 10), 'admin']
             );
+        }
+
+        const allUsers = await db.all('SELECT id FROM users');
+        for (const user of allUsers) {
+            await ensureSessionRecord(user.id);
         }
 
         console.log('[Boot] Banco de dados inicializado com sucesso');
@@ -261,19 +337,14 @@ const qrCodes = {};
 const connectedUsers = new Set();
 const clientErrors = {};
 const clientStates = {};
-const dataDir = path.join(runtimeBasePath, '.wwebjs_auth');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 function setClientState(userId, status, message) {
     clientStates[userId] = { status, message: message || null, updatedAt: Date.now() };
 }
 
-function getUserAuthPath(userId) {
-    return path.join(dataDir, `.wwebjs_auth_${userId}`);
-}
-
 async function createClientForUser(userId) {
     if (clients[userId]) return;
+    await ensureSessionRecord(userId);
     delete clientErrors[userId];
     delete qrCodes[userId];
     setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
@@ -285,39 +356,54 @@ async function createClientForUser(userId) {
         return;
     }
 
-    const authPath = getUserAuthPath(userId);
-    if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
-
     const puppeteerArgs = [
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
         '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
-        '--no-first-run', '--no-zygote', '--single-process',
+        '--no-first-run', '--no-zygote',
         '--disable-extensions', '--disable-background-networking',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-features=TranslateUI,BlinkGenPropertyTrees',
-        '--disable-ipc-flooding-protection',
-        '--disable-hang-monitor',
-        '--disable-client-side-phishing-detection',
-        '--disable-popup-blocking',
-        '--disable-default-apps',
-        '--disable-sync',
-        '--metrics-recording-only',
         '--mute-audio',
-        '--no-default-browser-check',
-        '--safebrowsing-disable-auto-update',
-        '--js-flags=--max-old-space-size=256'
+        '--no-default-browser-check'
     ];
 
     const puppeteerOpts = { headless: true, args: puppeteerArgs, executablePath: chromeExecutable };
 
-    const client = new Client({ authStrategy: new LocalAuth({ dataPath: authPath }), puppeteer: puppeteerOpts });
+    const client = new Client({
+        authStrategy: new RemoteAuth({
+            clientId: getUserSessionId(userId),
+            dataPath: dataDir,
+            store: remoteSessionStore,
+            backupSyncIntervalMs: 60000
+        }),
+        puppeteer: puppeteerOpts,
+        takeoverOnConflict: true,
+        authTimeoutMs: 120000,
+        qrMaxRetries: 0
+    });
 
     client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp'); });
     client.on('authenticated', () => { delete qrCodes[userId]; setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...'); });
     client.on('loading_screen', (percent, message) => { const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`; setClientState(userId, 'connecting', text); });
+    client.on('change_state', async (state) => {
+        if (state === 'CONNECTED') {
+            connectedUsers.add(userId);
+            setClientState(userId, 'connected', 'Conectado');
+            try {
+                if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]);
+            } catch (e) { }
+            return;
+        }
+
+        if (state === 'OPENING' || state === 'PAIRING') {
+            setClientState(userId, 'connecting', `Conectando ao WhatsApp (${state})...`);
+        }
+    });
     client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
+    client.on('remote_session_saved', async () => {
+        try {
+            if (pool) await db.run("UPDATE wa_sessions SET last_update=NOW() WHERE user_id=$1", [userId]);
+        } catch (e) { }
+        console.log(`[User ${userId}] Sessao remota salva`);
+    });
     client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); });
 
     client.on('message', async (msg) => {
@@ -376,14 +462,11 @@ async function autoReconnectSavedSessions() {
             return;
         }
         console.log('[Boot] Verificando sessoes salvas...');
-        const sessions = await db.all("SELECT user_id FROM wa_sessions WHERE connected=1");
+        const sessions = await db.all("SELECT user_id FROM wa_sessions WHERE connected=1 OR session_blob IS NOT NULL");
         if (!sessions || sessions.length === 0) return;
         for (const s of sessions) {
-            const authPath = getUserAuthPath(s.user_id);
-            if (fs.existsSync(authPath)) {
-                console.log(`[Boot] Auto-reconectando user ${s.user_id}`);
-                await createClientForUser(s.user_id);
-            }
+            console.log(`[Boot] Auto-reconectando user ${s.user_id}`);
+            await createClientForUser(s.user_id);
         }
     } catch (err) {
         console.error('[Boot] Erro ao auto-reconectar:', err.message);
@@ -434,7 +517,7 @@ app.post('/api/users', auth, adminAuth, async (req, res) => {
         if (!username || username.length < 3) return res.status(400).json({ error: 'MÃ­nimo 3 caracteres' });
         if (!password || password.length < 4) return res.status(400).json({ error: 'MÃ­nimo 4 caracteres' });
         const result = await db.run("INSERT INTO users (username, password_hash, role, created_at) VALUES ($1,$2,'user',NOW()) RETURNING id", [username, bcrypt.hashSync(password, 10)]);
-        await db.run("INSERT INTO wa_sessions (user_id, connected) VALUES ($1, 0)", [result.rows[0].id]);
+        await ensureSessionRecord(result.rows[0].id);
         res.json({ success: true, id: result.rows[0].id });
     } catch (err) {
         if (err.code === '23505') res.status(400).json({ error: 'UsuÃ¡rio jÃ¡ existe' });
@@ -461,11 +544,9 @@ app.post('/api/admin/users/:id/disconnect', auth, adminAuth, async (req, res) =>
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = parseInt(req.params.id);
         if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        const authPath = getUserAuthPath(userId);
-        if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
         connectedUsers.delete(userId); delete qrCodes[userId]; delete clientErrors[userId];
         setClientState(userId, 'disconnected', 'Desconectado');
-        await db.run("UPDATE wa_sessions SET connected=0, last_update=NOW() WHERE user_id=$1", [userId]);
+        await db.run("UPDATE wa_sessions SET connected=0, session_blob=NULL, last_update=NOW() WHERE user_id=$1", [userId]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -571,10 +652,9 @@ app.get('/api/whatsapp/status', auth, async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
     const uid = req.session.user.id;
-    const authPath = getUserAuthPath(uid);
 
-    // Se tem auth salvo mas cliente nao iniciado, tenta reconectar
-    if (!clients[uid] && !clientErrors[uid] && fs.existsSync(authPath)) {
+    // Se tem sessao salva no banco mas cliente nao iniciado, tenta reconectar
+    if (!clients[uid] && !clientErrors[uid] && pool && await hasStoredSession(uid)) {
         await createClientForUser(uid);
     }
 
@@ -608,12 +688,10 @@ app.post('/api/whatsapp/logout', auth, async (req, res) => {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = req.session.user.id;
         if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        const authPath = getUserAuthPath(userId);
         delete clientErrors[userId]; delete qrCodes[userId];
         connectedUsers.delete(userId);
         setClientState(userId, 'disconnected', 'Desconectado');
-        if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
-        await db.run("UPDATE wa_sessions SET connected=0, last_update=NOW() WHERE user_id=$1", [userId]);
+        await db.run("UPDATE wa_sessions SET connected=0, session_blob=NULL, last_update=NOW() WHERE user_id=$1", [userId]);
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
