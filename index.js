@@ -132,7 +132,42 @@ function prepareChromeForRuntime() {
 
 let pool = null;
 let dbReady = false;
-const appRole = process.env.APP_ROLE === 'worker' ? 'worker' : 'web';
+let dbInitError = null;
+let dbUrlSource = null;
+
+function resolveDatabaseUrl() {
+    const directCandidates = [
+        ['DATABASE_URL', process.env.DATABASE_URL],
+        ['POSTGRES_URL', process.env.POSTGRES_URL],
+        ['POSTGRESQL_URL', process.env.POSTGRESQL_URL],
+        ['RENDER_DATABASE_URL', process.env.RENDER_DATABASE_URL],
+        ['BOT_WHATSAPP_DB_URL', process.env.BOT_WHATSAPP_DB_URL],
+    ];
+
+    for (const [name, value] of directCandidates) {
+        if (value && String(value).trim()) {
+            dbUrlSource = name;
+            return String(value).trim();
+        }
+    }
+
+    if (process.env.PGHOST && process.env.PGDATABASE && process.env.PGUSER) {
+        const user = encodeURIComponent(process.env.PGUSER);
+        const pass = encodeURIComponent(process.env.PGPASSWORD || '');
+        const host = process.env.PGHOST;
+        const port = process.env.PGPORT || '5432';
+        const db = process.env.PGDATABASE;
+        dbUrlSource = 'PG* variables';
+        return `postgresql://${user}:${pass}@${host}:${port}/${db}`;
+    }
+
+    dbUrlSource = null;
+    return null;
+}
+
+const appRole = process.env.APP_ROLE
+    ? (process.env.APP_ROLE === 'worker' ? 'worker' : 'web')
+    : (process.env.RENDER === 'true' ? 'web' : 'worker');
 const isWorkerRole = appRole === 'worker';
 const workerInstanceId = process.env.WORKER_ID || `${process.env.RENDER_SERVICE_NAME || 'worker'}-${process.pid}`;
 
@@ -150,13 +185,18 @@ function parseUserIdFromSessionName(sessionName) {
 
 function initPool() {
     if (pool) return pool;
-    const dbUrl = process.env.DATABASE_URL;
+    const dbUrl = resolveDatabaseUrl();
     if (!dbUrl) {
-        console.warn('[Boot] DATABASE_URL nao definido, banco sera desabilitado');
+        console.warn('[Boot] Nenhuma URL de banco encontrada (DATABASE_URL/POSTGRES_URL/PG*). Banco sera desabilitado');
         return null;
     }
+    process.env.DATABASE_URL = dbUrl;
+    const useSsl = process.env.PGSSLMODE === 'require'
+        || process.env.DB_SSL === 'true'
+        || (dbUrl.includes('render.com') && process.env.DB_SSL !== 'false');
     pool = new Pool({
         connectionString: dbUrl,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
         max: 20,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 2000,
@@ -249,13 +289,14 @@ async function hasStoredSession(userId) {
 
 async function initDatabase() {
     try {
-        if (!pool && !process.env.DATABASE_URL) {
-            console.warn('[Boot] DATABASE_URL nao definido - banco desabilitado');
-            dbReady = true;
+        if (!pool && !resolveDatabaseUrl()) {
+            dbInitError = 'URL do banco ausente';
+            console.warn('[Boot] Banco desabilitado: URL do banco ausente');
+            dbReady = false;
             return;
         }
         initPool();
-        console.log('[Boot] Inicializando banco de dados PostgreSQL...');
+        console.log(`[Boot] Inicializando banco PostgreSQL (source=${dbUrlSource || 'desconhecido'})...`);
 
         await db.run(`CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -362,10 +403,12 @@ async function initDatabase() {
         }
 
         console.log('[Boot] Banco de dados inicializado com sucesso');
+        dbInitError = null;
         dbReady = true;
     } catch (err) {
         console.error('[Boot] Erro ao inicializar banco de dados:', err.message);
-        dbReady = true;
+        dbInitError = err.message;
+        dbReady = false;
     }
 }
 
@@ -903,6 +946,8 @@ app.get('/healthz', async (req, res) => {
             ok: Boolean(pool && dbReady),
             app_role: appRole,
             db_ready: Boolean(pool && dbReady),
+            db_url_source: dbUrlSource,
+            db_error: dbInitError,
             worker_loop_active: Boolean(isWorkerRole && workerLoopHandle),
             worker_job_running: Boolean(workerJobRunning),
             pending_jobs: pendingJobs,
@@ -928,7 +973,7 @@ const getRuntimeInfo = () => ({
 
 app.post('/api/login', async (req, res) => {
     try {
-        if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
+        if (!pool) return res.status(500).json({ error: `Banco nao disponivel (${dbInitError || 'configure DATABASE_URL no Render'})` });
         const user = await db.get("SELECT * FROM users WHERE username=$1", [req.body.username]);
         if (user && bcrypt.compareSync(req.body.password, user.password_hash)) {
             req.session.user = { id: user.id, username: user.username, role: user.role };
@@ -1187,7 +1232,7 @@ app.post('/api/password', auth, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/ping', (req, res) => res.json({ ok: true }));
+app.get('/api/ping', (req, res) => res.json({ ok: true, app_role: appRole, db_ready: Boolean(pool && dbReady), db_error: dbInitError }));
 app.get('/admin', (req, res) => { res.sendFile(path.join(basePath, 'public', 'index.html')); });
 
 setInterval(async () => {
