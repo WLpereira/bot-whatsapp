@@ -121,6 +121,12 @@ function prepareChromeForRuntime() {
     return undefined;
 }
 
+// Fallback: Set DATABASE_URL if not already set (for Render compatibility)
+if (!process.env.DATABASE_URL && process.env.RENDER === 'true') {
+    process.env.DATABASE_URL = 'postgresql://botwhatsapp_7gbj_user:ltMv03ghqgw1pwUnvP9ob4M6BGxxkM8w@dpg-d7l1n71o3t8c73b3pa5g-a/botwhatsapp_7gbj';
+    console.log('[Boot] DATABASE_URL injetada via fallback');
+}
+
 let pool = null;
 let dbReady = false;
 
