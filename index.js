@@ -893,6 +893,15 @@ app.use(express.static(path.join(basePath, 'public')));
 
 const auth = (req, res, next) => { if (req.session?.user) return next(); res.status(401).json({ error: 'Nao autorizado' }); };
 const adminAuth = (req, res, next) => { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Acesso negado' }); };
+const getRuntimeInfo = () => ({
+    app_role: appRole,
+    worker_enabled: isWorkerRole,
+    capabilities: {
+        pairing_code: isWorkerRole,
+        qr_connect: true,
+        queued_actions: true
+    }
+});
 
 app.post('/api/login', async (req, res) => {
     try {
@@ -900,7 +909,7 @@ app.post('/api/login', async (req, res) => {
         const user = await db.get("SELECT * FROM users WHERE username=$1", [req.body.username]);
         if (user && bcrypt.compareSync(req.body.password, user.password_hash)) {
             req.session.user = { id: user.id, username: user.username, role: user.role };
-            res.json({ success: true, username: user.username, role: user.role });
+            res.json({ success: true, username: user.username, role: user.role, runtime: getRuntimeInfo() });
         } else {
             res.status(401).json({ error: 'Credenciais invÃ¡lidas' });
         }
@@ -910,7 +919,7 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => res.json({ success: true })); });
-app.get('/api/me', auth, (req, res) => { res.json(req.session.user); });
+app.get('/api/me', auth, (req, res) => { res.json({ ...req.session.user, runtime: getRuntimeInfo() }); });
 
 app.get('/api/users', auth, adminAuth, async (req, res) => {
     try {

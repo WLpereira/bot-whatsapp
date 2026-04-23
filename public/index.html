@@ -1076,6 +1076,12 @@
                     <div class="status-dot dot-red" id="wa-dot"></div>
                     <span id="wa-status-text">Desconectado</span>
                 </div>
+                <div id="wa-runtime-note" class="card hidden"
+                    style="margin-top:12px;padding:14px 16px;background:rgba(52,152,219,.12);border-color:rgba(52,152,219,.35)">
+                    <div class="bold" style="margin-bottom:4px;color:var(--blue)">Painel em modo web</div>
+                    <div class="text-muted">Este painel só enfileira comandos. O QR e a conexão real dependem do worker
+                        WhatsApp rodando na VPS com o mesmo banco.</div>
+                </div>
                 <div id="qr-wrapper" class="card text-center hidden">
                     <div class="card-title justify-center">&#128247; Escaneie o QR Code</div>
                     <p class="text-muted" style="font-size:13px;margin-bottom:14px">Abra o WhatsApp &#8594; Aparelhos
@@ -1093,7 +1099,7 @@
                     <button class="btn btn-danger" id="btn-wa-disconnect">&#9679; Desconectar</button>
                     <button class="btn btn-secondary" id="btn-wa-refresh">&#8635; Verificar Status</button>
                 </div>
-                <div class="card" style="margin-top:12px">
+                <div class="card" id="pairing-card" style="margin-top:12px">
                     <div class="card-title">Pareamento por Código (alternativa ao QR)</div>
                     <div class="flex gap-2 wrap">
                         <div style="flex:1;min-width:200px">
@@ -1332,6 +1338,7 @@
                     var d = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: u, password: p }) });
                     if (d.success) {
                         hide('screen-login');
+                        runtimeInfo = d.runtime || null;
                         if (d.role === 'admin') {
                             show('screen-admin');
                             qs('admin-name-sidebar').textContent = d.username;
@@ -1535,8 +1542,24 @@
                ========================== */
             var waTimer = null;
             var prevWaStatus = null;
+            var runtimeInfo = null;
+
+            function applyRuntimeMode(runtime) {
+                runtimeInfo = runtime || { app_role: 'web', capabilities: {} };
+                var canPair = Boolean(runtimeInfo.capabilities && runtimeInfo.capabilities.pairing_code);
+                if (!canPair) {
+                    hide('btn-wa-pair-code');
+                    hide('pairing-card');
+                    show('wa-runtime-note');
+                } else {
+                    show('btn-wa-pair-code');
+                    show('pairing-card');
+                    hide('wa-runtime-note');
+                }
+            }
 
             function initUser() {
+                applyRuntimeMode(runtimeInfo);
                 loadUserConfig();
                 checkWaStatus();
                 qs('btn-wa-connect').addEventListener('click', function () {
@@ -1661,6 +1684,10 @@
             }
 
             async function requestPairCode() {
+                if (!runtimeInfo || !runtimeInfo.capabilities || !runtimeInfo.capabilities.pairing_code) {
+                    setAlert('pair-status', 'Pareamento por código não está disponível no painel web. Use o QR com o worker ativo.', 'info');
+                    return;
+                }
                 var phone = qs('pair-phone').value.trim();
                 if (!phone) {
                     setAlert('pair-status', 'Informe seu número com DDI (ex: 5511999999999)', 'error');
