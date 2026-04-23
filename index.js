@@ -8,6 +8,15 @@ const path = require('path');
 const fs = require('fs');
 const { execFileSync } = require('child_process');
 
+process.on('unhandledRejection', (reason) => {
+    const msg = reason && reason.message ? reason.message : String(reason);
+    console.error('[Process] UnhandledRejection:', msg);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('[Process] UncaughtException:', err && err.message ? err.message : err);
+});
+
 const runtimeBasePath = process.cwd();
 const defaultCacheRoot = path.join(runtimeBasePath, '.cache');
 const defaultPuppeteerCache = path.join(defaultCacheRoot, 'puppeteer');
@@ -365,7 +374,13 @@ async function createClientForUser(userId) {
         '--no-default-browser-check'
     ];
 
-    const puppeteerOpts = { headless: true, args: puppeteerArgs, executablePath: chromeExecutable };
+    const puppeteerOpts = {
+        headless: true,
+        args: puppeteerArgs,
+        executablePath: chromeExecutable,
+        timeout: 120000,
+        protocolTimeout: 120000
+    };
 
     const client = new Client({
         authStrategy: new RemoteAuth({
@@ -376,7 +391,7 @@ async function createClientForUser(userId) {
         }),
         puppeteer: puppeteerOpts,
         takeoverOnConflict: true,
-        authTimeoutMs: 120000,
+        authTimeoutMs: 180000,
         qrMaxRetries: 0
     });
 
