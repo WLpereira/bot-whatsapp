@@ -477,6 +477,7 @@ const clients = {};
 const qrCodes = {};
 const pairingCodes = {};
 const pairingJobs = {};
+const clientInitLocks = {};
 const connectedUsers = new Set();
 const clientErrors = {};
 const clientStates = {};
@@ -487,6 +488,12 @@ function setClientState(userId, status, message) {
 
 async function createClientForUser(userId) {
     if (clients[userId]) return;
+    if (clientInitLocks[userId]) {
+        await clientInitLocks[userId];
+        return;
+    }
+
+    clientInitLocks[userId] = (async () => {
     await ensureSessionRecord(userId);
     delete clientErrors[userId];
     delete qrCodes[userId];
@@ -703,8 +710,13 @@ async function createClientForUser(userId) {
 
     clients[userId] = client;
     client.initialize().catch(err => {
-        console.error(`[User ${userId}] Erro ao inicializar:`, err.message);
-        clientErrors[userId] = err.message || 'Erro ao inicializar WhatsApp';
+        const rawMsg = err && err.message ? err.message : String(err);
+        console.error(`[User ${userId}] Erro ao inicializar:`, rawMsg);
+        if (rawMsg.includes('The browser is already running for')) {
+            clientErrors[userId] = 'Sessao do navegador ja esta em uso. Aguarde alguns segundos e tente novamente.';
+        } else {
+            clientErrors[userId] = rawMsg || 'Erro ao inicializar WhatsApp';
+        }
         setClientState(userId, 'error', clientErrors[userId]);
         delete clients[userId];
         delete qrCodes[userId];
@@ -723,6 +735,13 @@ async function createClientForUser(userId) {
             }).catch(() => { });
         }
     });
+    })();
+
+    try {
+        await clientInitLocks[userId];
+    } finally {
+        delete clientInitLocks[userId];
+    }
 }
 
 function wait(ms) {
