@@ -292,7 +292,22 @@ async function createClientForUser(userId) {
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
         '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas',
         '--no-first-run', '--no-zygote', '--single-process',
-        '--disable-extensions', '--disable-background-networking'
+        '--disable-extensions', '--disable-background-networking',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-features=TranslateUI,BlinkGenPropertyTrees',
+        '--disable-ipc-flooding-protection',
+        '--disable-hang-monitor',
+        '--disable-client-side-phishing-detection',
+        '--disable-popup-blocking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--metrics-recording-only',
+        '--mute-audio',
+        '--no-default-browser-check',
+        '--safebrowsing-disable-auto-update',
+        '--js-flags=--max-old-space-size=256'
     ];
 
     const puppeteerOpts = { headless: true, args: puppeteerArgs, executablePath: chromeExecutable };
@@ -557,8 +572,26 @@ app.get('/api/whatsapp/status', auth, async (req, res) => {
     res.set('Pragma', 'no-cache');
     const uid = req.session.user.id;
     const authPath = getUserAuthPath(uid);
-    if (!clients[uid] && !clientErrors[uid] && fs.existsSync(authPath)) await createClientForUser(uid);
+
+    // Se tem auth salvo mas cliente nao iniciado, tenta reconectar
+    if (!clients[uid] && !clientErrors[uid] && fs.existsSync(authPath)) {
+        await createClientForUser(uid);
+    }
+
+    // Verifica status real do cliente
     if (connectedUsers.has(uid)) return res.json({ status: 'connected' });
+
+    // Verifica se cliente existe e esta funcionando
+    if (clients[uid]) {
+        try {
+            const state = await clients[uid].getState().catch(() => null);
+            if (state === 'CONNECTED') {
+                connectedUsers.add(uid);
+                return res.json({ status: 'connected' });
+            }
+        } catch (e) { }
+    }
+
     if (qrCodes[uid]) return res.json({ status: 'qr' });
     if (clientStates[uid]) return res.json(clientStates[uid]);
     if (clients[uid]) return res.json({ status: 'connecting', message: 'Abrindo sessao do WhatsApp...' });
