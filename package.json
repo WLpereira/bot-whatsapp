@@ -6,6 +6,8 @@
   "bin": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:web": "node index.js",
+    "start:worker": "node -e \"process.env.APP_ROLE='worker'; require('./index.js')\"",
     "build:pkg": "pkg . --targets node18-win-x64 --out-path dist"
   },
   "author": "",

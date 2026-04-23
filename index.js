@@ -130,14 +130,11 @@ function prepareChromeForRuntime() {
     return undefined;
 }
 
-// Fallback: Set DATABASE_URL if not already set (for Render compatibility)
-if (!process.env.DATABASE_URL && process.env.RENDER === 'true') {
-    process.env.DATABASE_URL = 'postgresql://botwhatsapp_7gbj_user:ltMv03ghqgw1pwUnvP9ob4M6BGxxkM8w@dpg-d7l1n71o3t8c73b3pa5g-a/botwhatsapp_7gbj';
-    console.log('[Boot] DATABASE_URL injetada via fallback');
-}
-
 let pool = null;
 let dbReady = false;
+const appRole = process.env.APP_ROLE === 'worker' ? 'worker' : 'web';
+const isWorkerRole = appRole === 'worker';
+const workerInstanceId = process.env.WORKER_ID || `${process.env.RENDER_SERVICE_NAME || 'worker'}-${process.pid}`;
 
 const dataDir = path.join(runtimeBasePath, '.wwebjs_auth');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -314,11 +311,42 @@ async function initDatabase() {
             session_name VARCHAR(255),
             session_blob BYTEA,
             connected INTEGER DEFAULT 0,
+            desired_state VARCHAR(50) DEFAULT 'disconnected',
+            status VARCHAR(50) DEFAULT 'disconnected',
+            status_message TEXT,
+            last_error TEXT,
+            qr_code TEXT,
+            pairing_code VARCHAR(50),
+            phone_number VARCHAR(30),
+            worker_host VARCHAR(255),
+            updated_at TIMESTAMP DEFAULT NOW(),
             last_update TIMESTAMP DEFAULT NOW()
         )`);
 
         await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS session_name VARCHAR(255)');
         await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS session_blob BYTEA');
+        await db.run("ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS desired_state VARCHAR(50) DEFAULT 'disconnected'");
+        await db.run("ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'disconnected'");
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS status_message TEXT');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS last_error TEXT');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS qr_code TEXT');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS pairing_code VARCHAR(50)');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS phone_number VARCHAR(30)');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS worker_host VARCHAR(255)');
+        await db.run('ALTER TABLE wa_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()');
+
+        await db.run(`CREATE TABLE IF NOT EXISTS wa_jobs (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            job_type VARCHAR(50) NOT NULL,
+            payload JSONB DEFAULT '{}'::jsonb,
+            status VARCHAR(30) DEFAULT 'pending',
+            result JSONB,
+            error_text TEXT,
+            locked_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )`);
 
         const admin = await db.get("SELECT * FROM users WHERE role='admin'");
         if (!admin) {
@@ -341,6 +369,67 @@ async function initDatabase() {
     }
 }
 
+async function patchWaSession(userId, changes) {
+    const entries = Object.entries(changes).filter(([, value]) => value !== undefined);
+    if (!entries.length) return;
+
+    const assignments = entries.map(([key], index) => `${key}=$${index + 2}`);
+    const values = entries.map(([, value]) => value);
+
+    assignments.push(`updated_at=NOW()`, `last_update=NOW()`);
+
+    await db.run(
+        `UPDATE wa_sessions SET ${assignments.join(', ')} WHERE user_id=$1`,
+        [userId, ...values]
+    );
+}
+
+async function getWaSession(userId) {
+    return db.get('SELECT * FROM wa_sessions WHERE user_id=$1', [userId]);
+}
+
+async function enqueueWaJob(userId, jobType, payload = {}) {
+    const result = await db.run(
+        `INSERT INTO wa_jobs (user_id, job_type, payload, status, updated_at)
+         VALUES ($1, $2, $3::jsonb, 'pending', NOW())
+         RETURNING id`,
+        [userId, jobType, JSON.stringify(payload)]
+    );
+    return result.rows[0]?.id;
+}
+
+async function claimNextWaJob() {
+    const result = await db.query(
+        `WITH next_job AS (
+            SELECT id
+            FROM wa_jobs
+            WHERE status='pending'
+            ORDER BY created_at ASC
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE wa_jobs AS jobs
+        SET status='running', locked_by=$1, updated_at=NOW()
+        FROM next_job
+        WHERE jobs.id = next_job.id
+        RETURNING jobs.*`,
+        [workerInstanceId]
+    );
+    return result.rows[0] || null;
+}
+
+async function finishWaJob(jobId, status, details = {}) {
+    await db.run(
+        `UPDATE wa_jobs
+         SET status=$2,
+             result=$3::jsonb,
+             error_text=$4,
+             updated_at=NOW()
+         WHERE id=$1`,
+        [jobId, status, JSON.stringify(details.result || {}), details.error || null]
+    );
+}
+
 const clients = {};
 const qrCodes = {};
 const pairingCodes = {};
@@ -360,11 +449,26 @@ async function createClientForUser(userId) {
     delete qrCodes[userId];
     delete pairingCodes[userId];
     setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
+    if (pool) await patchWaSession(userId, {
+        desired_state: 'connected',
+        status: 'connecting',
+        status_message: 'Abrindo sessao do WhatsApp...',
+        last_error: null,
+        qr_code: null,
+        pairing_code: null,
+        worker_host: workerInstanceId
+    });
 
     const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
     if (!chromeExecutable) {
         clientErrors[userId] = chromePreparationError || 'Chrome indisponivel para abrir o WhatsApp';
         setClientState(userId, 'error', clientErrors[userId]);
+        if (pool) await patchWaSession(userId, {
+            status: 'error',
+            status_message: clientErrors[userId],
+            last_error: clientErrors[userId],
+            connected: 0
+        });
         return;
     }
 
@@ -398,38 +502,107 @@ async function createClientForUser(userId) {
         qrMaxRetries: 0
     });
 
-    client.on('qr', (qr) => { qrCodes[userId] = qr; delete pairingCodes[userId]; connectedUsers.delete(userId); setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp'); });
+    client.on('qr', (qr) => {
+        qrCodes[userId] = qr;
+        delete pairingCodes[userId];
+        connectedUsers.delete(userId);
+        setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp');
+        if (pool) {
+            patchWaSession(userId, {
+                status: 'qr',
+                status_message: 'Escaneie o QR Code no WhatsApp',
+                qr_code: qr,
+                pairing_code: null,
+                connected: 0,
+                last_error: null,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
+    });
     client.on('code', (code) => {
         pairingCodes[userId] = code;
         delete pairingJobs[userId];
         delete qrCodes[userId];
         setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
         console.log(`[User ${userId}] Codigo de pareamento: ${code}`);
+        if (pool) {
+            patchWaSession(userId, {
+                status: 'pairing_code',
+                status_message: 'Use o codigo no WhatsApp para conectar',
+                qr_code: null,
+                pairing_code: code,
+                connected: 0,
+                last_error: null,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
     });
-    client.on('authenticated', () => { delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...'); });
-    client.on('loading_screen', (percent, message) => { const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`; setClientState(userId, 'connecting', text); });
+    client.on('authenticated', () => {
+        delete qrCodes[userId];
+        delete pairingCodes[userId];
+        delete pairingJobs[userId];
+        setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...');
+        if (pool) {
+            patchWaSession(userId, {
+                status: 'authenticated',
+                status_message: 'WhatsApp autenticado. Finalizando conexao...',
+                qr_code: null,
+                pairing_code: null,
+                connected: 0,
+                last_error: null,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
+    });
+    client.on('loading_screen', (percent, message) => {
+        const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`;
+        setClientState(userId, 'connecting', text);
+        if (pool) {
+            patchWaSession(userId, {
+                status: 'connecting',
+                status_message: text,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
+    });
     client.on('change_state', async (state) => {
         if (state === 'CONNECTED') {
             connectedUsers.add(userId);
             setClientState(userId, 'connected', 'Conectado');
             try {
-                if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]);
+                if (pool) await patchWaSession(userId, {
+                    connected: 1,
+                    desired_state: 'connected',
+                    status: 'connected',
+                    status_message: 'Conectado',
+                    qr_code: null,
+                    pairing_code: null,
+                    last_error: null,
+                    worker_host: workerInstanceId
+                });
             } catch (e) { }
             return;
         }
 
         if (state === 'OPENING' || state === 'PAIRING') {
             setClientState(userId, 'connecting', `Conectando ao WhatsApp (${state})...`);
+            if (pool) {
+                patchWaSession(userId, {
+                    status: 'connecting',
+                    status_message: `Conectando ao WhatsApp (${state})...`,
+                    worker_host: workerInstanceId
+                }).catch(() => { });
+            }
         }
     });
-    client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
+    client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await patchWaSession(userId, { connected: 1, desired_state: 'connected', status: 'connected', status_message: 'Conectado', qr_code: null, pairing_code: null, last_error: null, worker_host: workerInstanceId }); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
     client.on('remote_session_saved', async () => {
         try {
             if (pool) await db.run("UPDATE wa_sessions SET last_update=NOW() WHERE user_id=$1", [userId]);
         } catch (e) { }
         console.log(`[User ${userId}] Sessao remota salva`);
     });
-    client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); });
+    client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); if (pool) { patchWaSession(userId, { connected: 0, status: 'error', status_message: clientErrors[userId], last_error: clientErrors[userId], qr_code: null, pairing_code: null, worker_host: workerInstanceId }).catch(() => { }); } });
 
     client.on('message', async (msg) => {
         if (msg.from.endsWith('@g.us')) return;
@@ -469,6 +642,17 @@ async function createClientForUser(userId) {
         delete pairingCodes[userId];
         delete pairingJobs[userId];
         setClientState(userId, clientErrors[userId] ? 'error' : 'disconnected', clientErrors[userId] || 'Desconectado');
+        if (pool) {
+            patchWaSession(userId, {
+                connected: 0,
+                status: clientErrors[userId] ? 'error' : 'disconnected',
+                status_message: clientErrors[userId] || 'Desconectado',
+                last_error: clientErrors[userId] || null,
+                qr_code: null,
+                pairing_code: null,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
     });
 
     clients[userId] = client;
@@ -481,6 +665,17 @@ async function createClientForUser(userId) {
         delete pairingCodes[userId];
         delete pairingJobs[userId];
         connectedUsers.delete(userId);
+        if (pool) {
+            patchWaSession(userId, {
+                connected: 0,
+                status: 'error',
+                status_message: clientErrors[userId],
+                last_error: clientErrors[userId],
+                qr_code: null,
+                pairing_code: null,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+        }
     });
 }
 
@@ -587,6 +782,108 @@ async function autoReconnectSavedSessions() {
     }
 }
 
+let workerLoopHandle = null;
+let workerJobRunning = false;
+
+async function processWaJob(job) {
+    const payload = job.payload || {};
+    const userId = job.user_id;
+
+    if (job.job_type === 'connect') {
+        await patchWaSession(userId, {
+            desired_state: 'connected',
+            status: 'connecting',
+            status_message: 'Solicitacao de conexao recebida',
+            last_error: null,
+            worker_host: workerInstanceId
+        });
+        await createClientForUser(userId);
+        await finishWaJob(job.id, 'done', { result: { accepted: true } });
+        return;
+    }
+
+    if (job.job_type === 'disconnect') {
+        const client = clients[userId];
+        if (client) {
+            await client.logout().catch(() => { });
+            await client.destroy().catch(() => { });
+            delete clients[userId];
+        }
+        delete clientErrors[userId];
+        delete qrCodes[userId];
+        delete pairingCodes[userId];
+        delete pairingJobs[userId];
+        connectedUsers.delete(userId);
+        setClientState(userId, 'disconnected', 'Desconectado');
+        await patchWaSession(userId, {
+            desired_state: 'disconnected',
+            connected: 0,
+            status: 'disconnected',
+            status_message: 'Desconectado',
+            last_error: null,
+            qr_code: null,
+            pairing_code: null,
+            session_blob: null,
+            worker_host: workerInstanceId
+        });
+        await finishWaJob(job.id, 'done', { result: { disconnected: true } });
+        return;
+    }
+
+    if (job.job_type === 'send_message') {
+        let client = clients[userId];
+        if (!client && await hasStoredSession(userId)) {
+            await createClientForUser(userId);
+            client = clients[userId];
+        }
+        if (!client) {
+            throw new Error('WhatsApp nao conectado. Conecte primeiro.');
+        }
+
+        const phone = String(payload.phone || '').replace(/[^0-9]/g, '');
+        await client.sendMessage(`${phone}@c.us`, payload.message);
+        await finishWaJob(job.id, 'done', { result: { sent: true } });
+        return;
+    }
+
+    await finishWaJob(job.id, 'failed', { error: `Tipo de job desconhecido: ${job.job_type}` });
+}
+
+async function runWorkerLoop() {
+    if (!isWorkerRole || workerJobRunning) return;
+    workerJobRunning = true;
+    try {
+        const job = await claimNextWaJob();
+        if (!job) return;
+        try {
+            await processWaJob(job);
+        } catch (err) {
+            const message = err && err.message ? err.message : String(err);
+            await patchWaSession(job.user_id, {
+                status: 'error',
+                status_message: message,
+                last_error: message,
+                worker_host: workerInstanceId
+            }).catch(() => { });
+            await finishWaJob(job.id, 'failed', { error: message });
+        }
+    } finally {
+        workerJobRunning = false;
+    }
+}
+
+function startWorkerLoop() {
+    if (!isWorkerRole || workerLoopHandle) return;
+    workerLoopHandle = setInterval(() => {
+        runWorkerLoop().catch((err) => {
+            console.error('[Worker] Loop error:', err.message);
+        });
+    }, 2000);
+    runWorkerLoop().catch((err) => {
+        console.error('[Worker] Initial loop error:', err.message);
+    });
+}
+
 const isRender = process.env.RENDER === 'true';
 const app = express();
 app.use(express.json());
@@ -618,8 +915,8 @@ app.get('/api/me', auth, (req, res) => { res.json(req.session.user); });
 app.get('/api/users', auth, adminAuth, async (req, res) => {
     try {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
-        const users = await db.all("SELECT id, username, role, is_paused, created_at FROM users");
-        const result = users.map(u => ({ ...u, wa_connected: connectedUsers.has(u.id), wa_status: clientStates[u.id] || { status: 'disconnected' } }));
+        const users = await db.all("SELECT u.id, u.username, u.role, u.is_paused, u.created_at, s.connected, s.status, s.status_message FROM users u LEFT JOIN wa_sessions s ON s.user_id=u.id");
+        const result = users.map(u => ({ ...u, wa_connected: Boolean(u.connected), wa_status: { status: u.status || 'disconnected', message: u.status_message || null } }));
         res.json(result);
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -645,11 +942,11 @@ app.delete('/api/users/:id', auth, adminAuth, async (req, res) => {
 
 app.post('/api/admin/users/:id/reconnect', auth, adminAuth, async (req, res) => {
     try {
+        if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = parseInt(req.params.id);
-        if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        connectedUsers.delete(userId); delete qrCodes[userId]; delete clientErrors[userId];
-        await createClientForUser(userId);
-        res.json({ success: true, message: 'Reconectando...' });
+        await enqueueWaJob(userId, 'connect', {});
+        await patchWaSession(userId, { desired_state: 'connected', status: 'queued', status_message: 'Reconexao enfileirada', last_error: null });
+        res.json({ success: true, message: 'Reconexao enfileirada.' });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -657,10 +954,8 @@ app.post('/api/admin/users/:id/disconnect', auth, adminAuth, async (req, res) =>
     try {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = parseInt(req.params.id);
-        if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        connectedUsers.delete(userId); delete qrCodes[userId]; delete clientErrors[userId];
-        setClientState(userId, 'disconnected', 'Desconectado');
-        await db.run("UPDATE wa_sessions SET connected=0, session_blob=NULL, last_update=NOW() WHERE user_id=$1", [userId]);
+        await enqueueWaJob(userId, 'disconnect', {});
+        await patchWaSession(userId, { desired_state: 'disconnected', status: 'queued', status_message: 'Desconexao enfileirada' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -757,7 +1052,8 @@ app.post('/api/admin/users/:id/resume', auth, adminAuth, async (req, res) => {
 app.get('/api/qr', auth, async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
-    const qr = qrCodes[req.session.user.id];
+    const session = await getWaSession(req.session.user.id);
+    const qr = session?.qr_code;
     if (!qr) return res.json({ qr: null });
     try { const url = await QRCode.toDataURL(qr, { width: 280, margin: 2 }); res.json({ qr: url }); } catch (e) { res.json({ qr: null }); }
 });
@@ -766,41 +1062,29 @@ app.get('/api/whatsapp/status', auth, async (req, res) => {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.set('Pragma', 'no-cache');
     const uid = req.session.user.id;
-
-    // Se tem sessao salva no banco mas cliente nao iniciado, tenta reconectar
-    if (!clients[uid] && !clientErrors[uid] && pool && await hasStoredSession(uid)) {
-        await createClientForUser(uid);
-    }
-
-    // Verifica status real do cliente
-    if (connectedUsers.has(uid)) return res.json({ status: 'connected' });
-
-    // Verifica se cliente existe e esta funcionando
-    if (clients[uid]) {
-        try {
-            const state = await clients[uid].getState().catch(() => null);
-            if (state === 'CONNECTED') {
-                connectedUsers.add(uid);
-                return res.json({ status: 'connected' });
-            }
-        } catch (e) { }
-    }
-
-    if (pairingCodes[uid]) return res.json({ status: 'pairing_code', code: pairingCodes[uid] });
-    if (pairingJobs[uid]) return res.json({ status: 'pairing_pending', message: 'Gerando codigo de pareamento...' });
-    if (qrCodes[uid]) return res.json({ status: 'qr' });
-    if (clientStates[uid]) return res.json(clientStates[uid]);
-    if (clients[uid]) return res.json({ status: 'connecting', message: 'Abrindo sessao do WhatsApp...' });
-    if (clientErrors[uid]) return res.json({ status: 'error', message: clientErrors[uid] });
-    res.json({ status: 'disconnected' });
+    const session = await getWaSession(uid);
+    if (!session) return res.json({ status: 'disconnected' });
+    if (session.pairing_code) return res.json({ status: 'pairing_code', code: session.pairing_code, message: session.status_message });
+    if (session.qr_code) return res.json({ status: 'qr', message: session.status_message });
+    if (session.status) return res.json({ status: session.status, message: session.status_message, connected: Boolean(session.connected) });
+    res.json({ status: session.connected ? 'connected' : 'disconnected', message: session.status_message });
 });
 
 app.post('/api/whatsapp/init', auth, async (req, res) => {
-    try { await createClientForUser(req.session.user.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
+    try {
+        const userId = req.session.user.id;
+        await ensureSessionRecord(userId);
+        await enqueueWaJob(userId, 'connect', {});
+        await patchWaSession(userId, { desired_state: 'connected', status: 'queued', status_message: 'Solicitacao de conexao enfileirada', last_error: null });
+        res.json({ success: true, queued: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/whatsapp/pairing-code', auth, async (req, res) => {
     try {
+        if (!isWorkerRole) {
+            return res.status(400).json({ error: 'Conexao por codigo deve ser feita pelo worker WhatsApp. Use QR no painel web.' });
+        }
         const userId = req.session.user.id;
         const phone = req.body.phone || req.body.number;
         const result = await requestPairingCodeForUser(userId, phone);
@@ -818,22 +1102,18 @@ app.post('/api/whatsapp/logout', auth, async (req, res) => {
     try {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = req.session.user.id;
-        if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        delete clientErrors[userId]; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId];
-        connectedUsers.delete(userId);
-        setClientState(userId, 'disconnected', 'Desconectado');
-        await db.run("UPDATE wa_sessions SET connected=0, session_blob=NULL, last_update=NOW() WHERE user_id=$1", [userId]);
+        await enqueueWaJob(userId, 'disconnect', {});
+        await patchWaSession(userId, { desired_state: 'disconnected', status: 'queued', status_message: 'Desconexao enfileirada' });
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/test-message', auth, async (req, res) => {
     try {
-        const client = clients[req.session.user.id];
-        if (!client) return res.status(400).json({ error: 'WhatsApp nao conectado. Conecte primeiro.' });
+        const userId = req.session.user.id;
         const phone = (req.body.to || req.body.phone || '').replace(/[^0-9]/g, '');
-        await client.sendMessage(`${phone}@c.us`, req.body.message);
-        res.json({ success: true });
+        await enqueueWaJob(userId, 'send_message', { phone, message: req.body.message });
+        res.json({ success: true, queued: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -843,7 +1123,8 @@ app.get('/api/admin/stats', auth, adminAuth, async (req, res) => {
         const today = new Date().toISOString().split('T')[0];
         const userCount = await db.get("SELECT COUNT(*) as c FROM users WHERE role='user'");
         const msgCount = await db.get("SELECT COUNT(*) as c FROM messages WHERE created_date=$1", [today]);
-        res.json({ users: userCount.c, msgs: msgCount.c, active: connectedUsers.size });
+        const activeCount = await db.get("SELECT COUNT(*) as c FROM wa_sessions WHERE connected=1");
+        res.json({ users: userCount.c, msgs: msgCount.c, active: activeCount.c });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -893,9 +1174,17 @@ function startServer(port = process.env.PORT || 3000) {
 
 (async () => {
     try {
-        prepareChromeForRuntime();
         await initDatabase();
-        await autoReconnectSavedSessions();
+        if (isWorkerRole) {
+            prepareChromeForRuntime();
+            await autoReconnectSavedSessions();
+            startWorkerLoop();
+            console.log(`[Boot] Worker WhatsApp ativo: ${workerInstanceId}`);
+            if (process.env.WORKER_PORT) startServer(process.env.WORKER_PORT);
+            return;
+        }
+
+        console.log('[Boot] API/Painel iniciados em modo web');
         startServer();
     } catch (err) {
         console.error('Erro no boot:', err);
