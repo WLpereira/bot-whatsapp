@@ -1089,8 +1089,25 @@
                 </div>
                 <div class="flex gap-2 wrap">
                     <button class="btn btn-primary" id="btn-wa-connect">&#9654; Conectar WhatsApp</button>
+                    <button class="btn btn-secondary" id="btn-wa-pair-code"># Conectar com Código</button>
                     <button class="btn btn-danger" id="btn-wa-disconnect">&#9679; Desconectar</button>
                     <button class="btn btn-secondary" id="btn-wa-refresh">&#8635; Verificar Status</button>
+                </div>
+                <div class="card" style="margin-top:12px">
+                    <div class="card-title">Pareamento por Código (alternativa ao QR)</div>
+                    <div class="flex gap-2 wrap">
+                        <div style="flex:1;min-width:200px">
+                            <label>Número WhatsApp (ex: 5511999999999)</label>
+                            <input type="text" id="pair-phone" placeholder="5511999999999">
+                        </div>
+                    </div>
+                    <div id="pair-code-box" class="hidden"
+                        style="margin-top:10px;padding:12px;border:1px dashed var(--border);border-radius:10px;text-align:center">
+                        <div style="font-size:12px;color:var(--text2)">Código de pareamento</div>
+                        <div id="pair-code-value"
+                            style="font-size:30px;font-weight:800;letter-spacing:3px;margin-top:4px">--------</div>
+                    </div>
+                    <div id="pair-status" class="hidden" style="margin-top:8px"></div>
                 </div>
                 <div class="card" style="margin-top:16px">
                     <div class="card-title">&#128228; Enviar Mensagem de Teste</div>
@@ -1537,6 +1554,7 @@
                     if (!confirm('Desconectar o WhatsApp?')) return;
                     api('/api/whatsapp/logout', { method: 'POST' }).then(function () { stopWaTimer(); checkWaStatus(); });
                 });
+                qs('btn-wa-pair-code').addEventListener('click', requestPairCode);
                 qs('btn-wa-refresh').addEventListener('click', checkWaStatus);
                 qs('btn-refresh-qr').addEventListener('click', loadQR);
                 qs('btn-send-test').addEventListener('click', sendTest);
@@ -1559,16 +1577,28 @@
                     if (d.status === 'connected') {
                         bar.classList.add('status-connected'); dot.className = 'status-dot dot-green';
                         txt.textContent = 'Conectado'; mini.textContent = 'Conectado'; mini.style.color = 'var(--accent)';
+                        hide('pair-code-box');
                         hide('qr-wrapper'); stopWaTimer();
+                    } else if (d.status === 'pairing_code') {
+                        bar.classList.add('status-qr'); dot.className = 'status-dot dot-yellow';
+                        txt.textContent = 'Digite o código de pareamento no WhatsApp'; mini.textContent = 'Código'; mini.style.color = 'var(--yellow)';
+                        show('qr-wrapper');
+                        show('pair-code-box');
+                        qs('pair-code-value').textContent = d.code || '--------';
+                        qs('qr-area').style.cssText = 'width:260px;min-height:180px;border:3px dashed var(--yellow);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text);flex-direction:column;gap:8px;padding:18px;text-align:center';
+                        qs('qr-area').innerHTML = '<span style="font-size:22px">Conexão por código ativa</span><span style="font-size:12px;color:var(--text2)">No celular: Aparelhos conectados → Conectar aparelho → Conectar com número</span>';
+                        startWaTimer();
                     } else if (d.status === 'qr') {
                         bar.classList.add('status-qr'); dot.className = 'status-dot dot-yellow';
                         txt.textContent = 'Escaneie o QR Code no WhatsApp'; mini.textContent = 'QR Code'; mini.style.color = 'var(--yellow)';
+                        hide('pair-code-box');
                         show('qr-wrapper');
                         if (prevWaStatus !== 'qr') loadQR();
                         startWaTimer();
                     } else if (d.status === 'connecting') {
                         bar.classList.add('status-connecting'); dot.className = 'status-dot dot-blue';
                         txt.textContent = d.message || 'Iniciando, aguarde o QR Code...'; mini.textContent = 'Conectando'; mini.style.color = 'var(--blue)';
+                        hide('pair-code-box');
                         show('qr-wrapper');
                         startWaTimer();
                     } else if (d.status === 'authenticated') {
@@ -1581,6 +1611,7 @@
                     } else if (d.status === 'error') {
                         bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
                         txt.textContent = d.message || 'Erro ao iniciar WhatsApp'; mini.textContent = 'Erro'; mini.style.color = 'var(--danger)';
+                        hide('pair-code-box');
                         show('qr-wrapper');
                         stopWaTimer();
                         qs('qr-area').style.cssText = 'width:260px;min-height:180px;border:3px dashed var(--danger);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text);flex-direction:column;gap:8px;padding:18px;text-align:center';
@@ -1588,6 +1619,7 @@
                     } else {
                         bar.classList.add('status-disconnected'); dot.className = 'status-dot dot-red';
                         txt.textContent = 'Desconectado'; mini.textContent = 'Desconectado'; mini.style.color = 'var(--text2)';
+                        hide('pair-code-box');
                         hide('qr-wrapper'); stopWaTimer();
                     }
                     prevWaStatus = d.status;
@@ -1619,6 +1651,28 @@
                     if (d.success) setAlert('test-send-status', 'Mensagem enviada com sucesso!', 'success');
                     else setAlert('test-send-status', d.error || 'Erro ao enviar', 'error');
                 } catch (e) { setAlert('test-send-status', 'Erro de conexão', 'error'); }
+            }
+
+            async function requestPairCode() {
+                var phone = qs('pair-phone').value.trim();
+                if (!phone) {
+                    setAlert('pair-status', 'Informe seu número com DDI (ex: 5511999999999)', 'error');
+                    return;
+                }
+                try {
+                    setAlert('pair-status', 'Gerando código de pareamento...', 'info');
+                    var d = await api('/api/whatsapp/pairing-code', { method: 'POST', body: JSON.stringify({ phone: phone }) });
+                    if (d.success && d.code) {
+                        show('pair-code-box');
+                        qs('pair-code-value').textContent = d.code;
+                        setAlert('pair-status', 'Código gerado. Digite no WhatsApp do celular.', 'success');
+                        startWaTimer();
+                    } else {
+                        setAlert('pair-status', d.error || 'Não foi possível gerar código', 'error');
+                    }
+                } catch (e) {
+                    setAlert('pair-status', 'Erro ao gerar código', 'error');
+                }
             }
 
             async function loadUserConfig() {

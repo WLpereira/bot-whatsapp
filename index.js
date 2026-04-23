@@ -343,6 +343,7 @@ async function initDatabase() {
 
 const clients = {};
 const qrCodes = {};
+const pairingCodes = {};
 const connectedUsers = new Set();
 const clientErrors = {};
 const clientStates = {};
@@ -356,6 +357,7 @@ async function createClientForUser(userId) {
     await ensureSessionRecord(userId);
     delete clientErrors[userId];
     delete qrCodes[userId];
+    delete pairingCodes[userId];
     setClientState(userId, 'connecting', 'Abrindo sessao do WhatsApp...');
 
     const chromeExecutable = chromeExecutablePath || prepareChromeForRuntime();
@@ -395,8 +397,14 @@ async function createClientForUser(userId) {
         qrMaxRetries: 0
     });
 
-    client.on('qr', (qr) => { qrCodes[userId] = qr; connectedUsers.delete(userId); setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp'); });
-    client.on('authenticated', () => { delete qrCodes[userId]; setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...'); });
+    client.on('qr', (qr) => { qrCodes[userId] = qr; delete pairingCodes[userId]; connectedUsers.delete(userId); setClientState(userId, 'qr', 'Escaneie o QR Code no WhatsApp'); });
+    client.on('code', (code) => {
+        pairingCodes[userId] = code;
+        delete qrCodes[userId];
+        setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
+        console.log(`[User ${userId}] Codigo de pareamento: ${code}`);
+    });
+    client.on('authenticated', () => { delete qrCodes[userId]; delete pairingCodes[userId]; setClientState(userId, 'authenticated', 'WhatsApp autenticado. Finalizando conexao...'); });
     client.on('loading_screen', (percent, message) => { const text = message ? `${message} (${percent}%)` : `Carregando (${percent}%)`; setClientState(userId, 'connecting', text); });
     client.on('change_state', async (state) => {
         if (state === 'CONNECTED') {
@@ -412,14 +420,14 @@ async function createClientForUser(userId) {
             setClientState(userId, 'connecting', `Conectando ao WhatsApp (${state})...`);
         }
     });
-    client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
+    client.on('ready', async () => { connectedUsers.add(userId); delete qrCodes[userId]; delete pairingCodes[userId]; delete clientErrors[userId]; setClientState(userId, 'connected', 'Conectado'); try { if (pool) await db.run("UPDATE wa_sessions SET connected=1, last_update=NOW() WHERE user_id=$1", [userId]); } catch (e) { } console.log(`[User ${userId}] Conectado`); });
     client.on('remote_session_saved', async () => {
         try {
             if (pool) await db.run("UPDATE wa_sessions SET last_update=NOW() WHERE user_id=$1", [userId]);
         } catch (e) { }
         console.log(`[User ${userId}] Sessao remota salva`);
     });
-    client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); });
+    client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); });
 
     client.on('message', async (msg) => {
         if (msg.from.endsWith('@g.us')) return;
@@ -456,6 +464,7 @@ async function createClientForUser(userId) {
         delete clients[userId];
         connectedUsers.delete(userId);
         delete qrCodes[userId];
+        delete pairingCodes[userId];
         setClientState(userId, clientErrors[userId] ? 'error' : 'disconnected', clientErrors[userId] || 'Desconectado');
     });
 
@@ -466,8 +475,37 @@ async function createClientForUser(userId) {
         setClientState(userId, 'error', clientErrors[userId]);
         delete clients[userId];
         delete qrCodes[userId];
+        delete pairingCodes[userId];
         connectedUsers.delete(userId);
     });
+}
+
+function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestPairingCodeForUser(userId, phone) {
+    const phoneDigits = String(phone || '').replace(/\D/g, '');
+    if (!phoneDigits || phoneDigits.length < 10) {
+        throw new Error('Numero invalido. Use formato internacional, ex: 5511999999999');
+    }
+
+    await createClientForUser(userId);
+    const client = clients[userId];
+    if (!client) throw new Error('Cliente WhatsApp indisponivel');
+
+    for (let i = 0; i < 20; i++) {
+        try {
+            const code = await client.requestPairingCode(phoneDigits, true, 120000);
+            pairingCodes[userId] = code;
+            setClientState(userId, 'pairing_code', 'Use o codigo no WhatsApp para conectar');
+            return code;
+        } catch (e) {
+            await wait(3000);
+        }
+    }
+
+    throw new Error('Nao foi possivel gerar codigo agora. Tente novamente em instantes.');
 }
 
 async function autoReconnectSavedSessions() {
@@ -687,6 +725,7 @@ app.get('/api/whatsapp/status', auth, async (req, res) => {
         } catch (e) { }
     }
 
+    if (pairingCodes[uid]) return res.json({ status: 'pairing_code', code: pairingCodes[uid] });
     if (qrCodes[uid]) return res.json({ status: 'qr' });
     if (clientStates[uid]) return res.json(clientStates[uid]);
     if (clients[uid]) return res.json({ status: 'connecting', message: 'Abrindo sessao do WhatsApp...' });
@@ -698,12 +737,23 @@ app.post('/api/whatsapp/init', auth, async (req, res) => {
     try { await createClientForUser(req.session.user.id); res.json({ success: true }); } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/whatsapp/pairing-code', auth, async (req, res) => {
+    try {
+        const userId = req.session.user.id;
+        const phone = req.body.phone || req.body.number;
+        const code = await requestPairingCodeForUser(userId, phone);
+        res.json({ success: true, code });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/whatsapp/logout', auth, async (req, res) => {
     try {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = req.session.user.id;
         if (clients[userId]) { await clients[userId].logout().catch(() => { }); await clients[userId].destroy().catch(() => { }); delete clients[userId]; }
-        delete clientErrors[userId]; delete qrCodes[userId];
+        delete clientErrors[userId]; delete qrCodes[userId]; delete pairingCodes[userId];
         connectedUsers.delete(userId);
         setClientState(userId, 'disconnected', 'Desconectado');
         await db.run("UPDATE wa_sessions SET connected=0, session_blob=NULL, last_update=NOW() WHERE user_id=$1", [userId]);
