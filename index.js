@@ -891,6 +891,29 @@ app.use(express.urlencoded({ extended: true }));
 app.use(session({ secret: 'bot-secret-2024', resave: false, saveUninitialized: false, cookie: { maxAge: 3600000 } }));
 app.use(express.static(path.join(basePath, 'public')));
 
+app.get('/healthz', async (req, res) => {
+    try {
+        let pendingJobs = 0;
+        if (pool) {
+            const pending = await db.get("SELECT COUNT(*)::int AS c FROM wa_jobs WHERE status='pending'");
+            pendingJobs = pending?.c || 0;
+        }
+
+        res.json({
+            ok: Boolean(pool && dbReady),
+            app_role: appRole,
+            db_ready: Boolean(pool && dbReady),
+            worker_loop_active: Boolean(isWorkerRole && workerLoopHandle),
+            worker_job_running: Boolean(workerJobRunning),
+            pending_jobs: pendingJobs,
+            uptime_seconds: Math.floor(process.uptime()),
+            now: new Date().toISOString()
+        });
+    } catch (err) {
+        res.status(500).json({ ok: false, app_role: appRole, error: err.message });
+    }
+});
+
 const auth = (req, res, next) => { if (req.session?.user) return next(); res.status(401).json({ error: 'Nao autorizado' }); };
 const adminAuth = (req, res, next) => { if (req.session?.user?.role === 'admin') return next(); res.status(403).json({ error: 'Acesso negado' }); };
 const getRuntimeInfo = () => ({
@@ -1189,7 +1212,7 @@ function startServer(port = process.env.PORT || 3000) {
             await autoReconnectSavedSessions();
             startWorkerLoop();
             console.log(`[Boot] Worker WhatsApp ativo: ${workerInstanceId}`);
-            if (process.env.WORKER_PORT) startServer(process.env.WORKER_PORT);
+            startServer(process.env.WORKER_PORT || 3001);
             return;
         }
 

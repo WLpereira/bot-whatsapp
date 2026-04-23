@@ -7,7 +7,23 @@ Este projeto agora roda em dois papéis:
 
 O `worker` precisa usar o mesmo `DATABASE_URL` do painel web.
 
-## 1. Preparar a VPS
+## Comando único (VPS limpa)
+
+Execute uma única linha com seu `DATABASE_URL`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WLpereira/bot-whatsapp/main/scripts/bootstrap-worker.sh | sudo DATABASE_URL='postgresql://USUARIO:SENHA@HOST:5432/BANCO' bash
+```
+
+Esse comando instala Node.js e bibliotecas do Chromium, baixa/atualiza o projeto, configura serviço systemd e inicia o worker.
+
+Depois, monitore em:
+
+```bash
+curl -fsS http://127.0.0.1:3001/healthz
+```
+
+## 1. Preparar a VPS (manual)
 
 Exemplo abaixo para Ubuntu 22.04 ou 24.04.
 
@@ -91,7 +107,26 @@ Para reiniciar:
 pm2 restart whatsapp-worker
 ```
 
-## 7. Checklist de validação
+## 7. Health endpoint para monitoramento
+
+O worker expõe endpoint local:
+
+- `GET /healthz`
+
+Resposta esperada (resumo):
+
+- `ok`: `true` quando banco está pronto
+- `app_role`: `worker`
+- `worker_loop_active`: loop de jobs ativo
+- `pending_jobs`: tamanho da fila pendente
+
+Exemplo:
+
+```bash
+curl -fsS http://127.0.0.1:3001/healthz | jq
+```
+
+## 8. Checklist de validação
 
 1. O painel no Render abre normalmente.
 2. O login funciona.
@@ -99,7 +134,7 @@ pm2 restart whatsapp-worker
 4. Com o worker ativo, o endpoint `/api/qr` passa a devolver o QR do usuário.
 5. Depois da leitura do QR, o status muda para `connected`.
 
-## 8. Problemas comuns
+## 9. Problemas comuns
 
 `Banco nao disponivel`:
 
