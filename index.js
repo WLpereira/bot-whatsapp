@@ -648,7 +648,10 @@ async function createClientForUser(userId) {
     client.on('auth_failure', (msg) => { clientErrors[userId] = msg || 'Falha de autenticacao do WhatsApp'; delete qrCodes[userId]; delete pairingCodes[userId]; delete pairingJobs[userId]; connectedUsers.delete(userId); delete clients[userId]; setClientState(userId, 'error', clientErrors[userId]); if (pool) { patchWaSession(userId, { connected: 0, status: 'error', status_message: clientErrors[userId], last_error: clientErrors[userId], qr_code: null, pairing_code: null, worker_host: workerInstanceId }).catch(() => { }); } });
 
     client.on('message', async (msg) => {
-        if (msg.from.endsWith('@g.us')) return;
+        // Ignore group chats, status/stories and messages sent by this own account.
+        if (msg.from?.endsWith('@g.us')) return;
+        if (msg.from === 'status@broadcast') return;
+        if (msg.fromMe) return;
         const body = (msg.body || '').toLowerCase().trim();
         const today = new Date().toISOString().split('T')[0];
         try {
@@ -1151,6 +1154,18 @@ app.post('/api/whatsapp/init', auth, async (req, res) => {
     try {
         const userId = req.session.user.id;
         await ensureSessionRecord(userId);
+
+        if (isWorkerRole) {
+            await createClientForUser(userId);
+            await patchWaSession(userId, {
+                desired_state: 'connected',
+                status: 'connecting',
+                status_message: 'Inicializando conexao local...',
+                last_error: null
+            });
+            return res.json({ success: true, queued: false, mode: 'direct' });
+        }
+
         await enqueueWaJob(userId, 'connect', {});
         await patchWaSession(userId, { desired_state: 'connected', status: 'queued', status_message: 'Solicitacao de conexao enfileirada', last_error: null });
         res.json({ success: true, queued: true });
@@ -1179,6 +1194,32 @@ app.post('/api/whatsapp/logout', auth, async (req, res) => {
     try {
         if (!pool) return res.status(500).json({ error: 'Banco nao disponivel' });
         const userId = req.session.user.id;
+
+        if (isWorkerRole) {
+            const client = clients[userId];
+            if (client) {
+                await client.logout().catch(() => { });
+                await client.destroy().catch(() => { });
+                delete clients[userId];
+            }
+            connectedUsers.delete(userId);
+            delete qrCodes[userId];
+            delete pairingCodes[userId];
+            delete pairingJobs[userId];
+            delete clientErrors[userId];
+            setClientState(userId, 'disconnected', 'Desconectado');
+            await patchWaSession(userId, {
+                desired_state: 'disconnected',
+                connected: 0,
+                status: 'disconnected',
+                status_message: 'Desconectado',
+                qr_code: null,
+                pairing_code: null,
+                last_error: null
+            });
+            return res.json({ success: true, queued: false, mode: 'direct' });
+        }
+
         await enqueueWaJob(userId, 'disconnect', {});
         await patchWaSession(userId, { desired_state: 'disconnected', status: 'queued', status_message: 'Desconexao enfileirada' });
         res.json({ success: true });
@@ -1189,6 +1230,19 @@ app.post('/api/test-message', auth, async (req, res) => {
     try {
         const userId = req.session.user.id;
         const phone = (req.body.to || req.body.phone || '').replace(/[^0-9]/g, '');
+
+        if (isWorkerRole) {
+            if (!phone) return res.status(400).json({ error: 'Numero invalido' });
+            let client = clients[userId];
+            if (!client && await hasStoredSession(userId)) {
+                await createClientForUser(userId);
+                client = clients[userId];
+            }
+            if (!client) return res.status(400).json({ error: 'WhatsApp nao conectado. Conecte primeiro.' });
+            await client.sendMessage(`${phone}@c.us`, req.body.message || 'Teste');
+            return res.json({ success: true, queued: false, mode: 'direct' });
+        }
+
         await enqueueWaJob(userId, 'send_message', { phone, message: req.body.message });
         res.json({ success: true, queued: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
