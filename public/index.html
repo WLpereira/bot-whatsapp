@@ -1579,6 +1579,13 @@
                         txt.textContent = 'Conectado'; mini.textContent = 'Conectado'; mini.style.color = 'var(--accent)';
                         hide('pair-code-box');
                         hide('qr-wrapper'); stopWaTimer();
+                    } else if (d.status === 'pairing_pending') {
+                        bar.classList.add('status-connecting'); dot.className = 'status-dot dot-blue';
+                        txt.textContent = d.message || 'Gerando codigo de pareamento...'; mini.textContent = 'Gerando código'; mini.style.color = 'var(--blue)';
+                        show('qr-wrapper');
+                        qs('qr-area').style.cssText = 'width:260px;min-height:180px;border:3px dashed var(--blue);border-radius:12px;display:flex;align-items:center;justify-content:center;margin:0 auto;color:var(--text);flex-direction:column;gap:8px;padding:18px;text-align:center';
+                        qs('qr-area').innerHTML = '<span style="font-size:28px">&#8987;</span><span>Gerando código de pareamento...</span>';
+                        startWaTimer();
                     } else if (d.status === 'pairing_code') {
                         bar.classList.add('status-qr'); dot.className = 'status-dot dot-yellow';
                         txt.textContent = 'Digite o código de pareamento no WhatsApp'; mini.textContent = 'Código'; mini.style.color = 'var(--yellow)';
@@ -1662,11 +1669,16 @@
                 try {
                     setAlert('pair-status', 'Gerando código de pareamento...', 'info');
                     var d = await api('/api/whatsapp/pairing-code', { method: 'POST', body: JSON.stringify({ phone: phone }) });
-                    if (d.success && d.code) {
-                        show('pair-code-box');
-                        qs('pair-code-value').textContent = d.code;
-                        setAlert('pair-status', 'Código gerado. Digite no WhatsApp do celular.', 'success');
+                    if (d.success) {
+                        if (d.code) {
+                            show('pair-code-box');
+                            qs('pair-code-value').textContent = d.code;
+                            setAlert('pair-status', 'Código gerado. Digite no WhatsApp do celular.', 'success');
+                        } else {
+                            setAlert('pair-status', 'Solicitação enviada. Aguarde o código aparecer abaixo.', 'info');
+                        }
                         startWaTimer();
+                        checkWaStatus();
                     } else {
                         setAlert('pair-status', d.error || 'Não foi possível gerar código', 'error');
                     }
