@@ -161,8 +161,10 @@ function resolveDatabaseUrl() {
         return `postgresql://${user}:${pass}@${host}:${port}/${db}`;
     }
 
-    dbUrlSource = null;
-    return null;
+    // Fallback hardcoded para o banco Render (usado quando env vars nao sao injetadas)
+    const hardcoded = 'postgresql://botwhatsapp_7gbj_user:ltMv03ghqgw1pwUnvP9ob4M6BGxxkM8w@dpg-d7l1n71o3t8c73b3pa5g-a.oregon-postgres.render.com/botwhatsapp_7gbj';
+    dbUrlSource = 'hardcoded_fallback';
+    return hardcoded;
 }
 
 const appRole = process.env.APP_ROLE
